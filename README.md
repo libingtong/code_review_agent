@@ -30,6 +30,18 @@ https://github.com/huoji120/QWEN-EXO-booster
 示例配置：`config.multi.yaml`（双源 + 时段 + 编排）；现成的 `config.yaml` 也已按"全局 `openai` 默认值 + `providers` 渠道列表"组织好。
 细节见下方「多源订阅管理」一节。
 
+# 分支规则
+
+- **`main`**：唯一开发分支，所有提交都落在这里。
+- **`master`**：只做 `main` 的快进镜像，不在其上直接开发，也不允许分叉。
+- 同步命令（在 `main` 上、工作区干净时执行）：
+
+```bash
+./scripts/sync-master.sh     # 快进 master → 推送 main 与 master
+```
+
+脚本用 `git fetch . main:master` 做**只允许快进**的更新，一旦两边分叉会直接报错而不是悄悄合并；如果你在 `master` 上直接提交过，先把它 rebase/merge 回 `main` 再同步。
+
 # 相关截图
 ![img](img/3.png)
 
