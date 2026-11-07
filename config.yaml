@@ -44,10 +44,13 @@ providers:
       base_url: https://open.bigmodel.cn/api/v1
       api_key: ""
       api_key_env: GLM_API_KEY
-      model: glm-5.3-flash           # 若报"找不到模型"，用 -check 查看该端点可用模型
+      # flash 在长工具上下文里会退化（把工具调用写成散文、输出预算全烧在 reasoning 上），
+      # 这里用完整版 glm-5.3；若报"找不到模型"，用 -check 查看该端点可用模型。
+      model: glm-5.3
       thinking:
         type: enabled
-      reasoning_effort: high
+      # high/max 在 glm-5.3 上单次生成可能超过 90s，且更容易撞 max_output_tokens
+      reasoning_effort: medium
       temperature: 1
       top_p: 1
       max_context_tokens: 1000000
@@ -113,7 +116,7 @@ schedule:
 
 # 诊断日志：默认关闭。排查厂商协议差异时打开，并把 llm_dump 打开即可拿到失败请求
 logging:
-  enabled: false
+  enabled: true
   level: info            # debug | info | warn | error | off
   dir: logs
   max_size_mb: 32

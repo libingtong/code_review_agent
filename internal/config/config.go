@@ -92,10 +92,10 @@ func validateReasoning(cfg OpenAIConfig, section string) error {
 		return fmt.Errorf("%s.thinking.type must be enabled or adaptive; disabled is not supported", section)
 	}
 	switch cfg.ReasoningEffort {
-	case "", "low", "high", "max":
+	case "", "minimal", "low", "medium", "high", "max":
 		return nil
 	default:
-		return fmt.Errorf("%s.reasoning_effort must be low, high or max", section)
+		return fmt.Errorf("%s.reasoning_effort must be minimal, low, medium, high or max", section)
 	}
 }
 
