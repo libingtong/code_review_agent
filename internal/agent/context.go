@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"unicode/utf8"
 
 	"code-review-agent/internal/forum"
@@ -38,7 +39,24 @@ func (a *Agent) responsesRequestContext(ctx context.Context) context.Context {
 		a.invalidateResponseContinuation()
 		return ctx
 	}
-	return llm.WithResponsesContinuation(ctx, a.responseID, a.messages[a.responseMessageIndex:])
+	suffix := a.messages[a.responseMessageIndex:]
+	if !hasTextItem(suffix) {
+		// A suffix made only of tool results leaves the request with no text at all;
+		// providers such as MiniMax reject it ("chat content is empty"). Fall back to
+		// the full history for this turn.
+		return ctx
+	}
+	return llm.WithResponsesContinuation(ctx, a.responseID, suffix)
+}
+
+// hasTextItem reports whether any message carries non-empty text content.
+func hasTextItem(messages []llm.Message) bool {
+	for _, message := range messages {
+		if (message.Type == "" || message.Type == "message") && strings.TrimSpace(message.Content) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) prepareRequest(ctx context.Context, emit func(Event)) error {

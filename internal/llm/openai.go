@@ -101,6 +101,12 @@ func DropResponseContinuation(ctx context.Context) context.Context {
 	return context.WithValue(ctx, responsesContinuationContextKey{}, ResponsesContinuation{})
 }
 
+// ResponsesContinuationFrom exposes the continuation attached to ctx (tests,
+// diagnostics).
+func ResponsesContinuationFrom(ctx context.Context) (ResponsesContinuation, bool) {
+	return responsesContinuationFromContext(ctx)
+}
+
 func responsesContinuationFromContext(ctx context.Context) (ResponsesContinuation, bool) {
 	if ctx == nil {
 		return ResponsesContinuation{}, false

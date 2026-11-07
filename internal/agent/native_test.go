@@ -498,3 +498,63 @@ func TestForumNudgeInjectedOnce(t *testing.T) {
 		t.Fatalf("posted agent nudged %d times", got)
 	}
 }
+
+// A continuation suffix that only carries tool results leaves the request with no
+// text; MiniMax answers 400 "chat content is empty". Such a turn must send the
+// full history instead.
+func TestContinuationSkippedWhenSuffixHasOnlyToolResults(t *testing.T) {
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-1", phaseAudit, team.board)
+	defer a.tools.Close()
+
+	a.messages = []llm.Message{
+		{Role: llm.RoleSystem, Content: "系统"},
+		{Role: llm.RoleUser, Content: "开始"},
+		{Type: "function_call", CallID: "c1", Name: "read_file", Arguments: `{}`},
+		{Type: "function_call_output", CallID: "c1", Content: `{"ok":true}`},
+	}
+	a.responseID = "resp_1"
+	a.responseMessageIndex = 3 // suffix = only the tool output
+
+	ctx := a.responsesRequestContext(context.Background())
+	if _, ok := llm.ResponsesContinuationFrom(ctx); ok {
+		t.Fatal("continuation must be dropped when the suffix has no text item")
+	}
+
+	// With a text item in the suffix the optimisation stays enabled.
+	a.messages = append(a.messages, llm.Message{Role: llm.RoleUser, Content: "继续"})
+	a.responseMessageIndex = 3
+	ctx = a.responsesRequestContext(context.Background())
+	if _, ok := llm.ResponsesContinuationFrom(ctx); !ok {
+		t.Fatal("continuation should be kept when the suffix has text")
+	}
+}
+
+// Compression can cut a tool pair; the replay must never carry orphan outputs.
+func TestSanitizeDropsOrphanToolOutputs(t *testing.T) {
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-1", phaseAudit, team.board)
+	defer a.tools.Close()
+
+	a.messages = []llm.Message{
+		{Type: "function_call_output", CallID: "orphan", Content: `{"ok":true}`},
+		{Role: llm.RoleUser, Content: "继续"},
+		{Type: "function_call", CallID: "c1", Name: "read_file", Arguments: `{}`},
+		{Type: "function_call_output", CallID: "c1", Content: `{"ok":true}`},
+	}
+	a.sanitizeMessages()
+	outputs := 0
+	for _, message := range a.messages {
+		if message.Type == "function_call_output" {
+			outputs++
+			if message.CallID == "orphan" {
+				t.Fatal("orphan output survived sanitize")
+			}
+		}
+	}
+	if outputs != 1 {
+		t.Fatalf("outputs = %d", outputs)
+	}
+}

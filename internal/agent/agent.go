@@ -136,7 +136,26 @@ func (a *Agent) sanitizeMessages() {
 	} else {
 		cleaned[0] = llm.Message{Role: llm.RoleSystem, Content: a.systemPrompt()}
 	}
-	a.messages = cleaned
+	// Compression can cut a tool pair in half; an output without its call is
+	// rejected by every provider, so drop the orphans.
+	pending := map[string]bool{}
+	normalized := cleaned[:0]
+	for _, msg := range cleaned {
+		switch msg.Type {
+		case "function_call":
+			pending[msg.CallID] = true
+			normalized = append(normalized, msg)
+		case "function_call_output":
+			if !pending[msg.CallID] {
+				continue
+			}
+			delete(pending, msg.CallID)
+			normalized = append(normalized, msg)
+		default:
+			normalized = append(normalized, msg)
+		}
+	}
+	a.messages = normalized
 }
 
 func (a *Agent) systemPrompt() string {
