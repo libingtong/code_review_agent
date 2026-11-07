@@ -315,9 +315,27 @@ func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, t
 			logModelFailure(ctx, "responses-tools-stream", c.cfg.Model, streamErr)
 		}
 		if streamErr != nil && badHistoryError(streamErr) && c.textHistoryEnabled() && hasNativeToolItems(requestMessages) {
-			// Mid-stream failure cannot be retried without duplicating output, but
-			// the next turn must not repeat it: switch this channel to text history.
+			// A rejection usually arrives before any token, so the same turn can be
+			// retried with a text-degraded history. If output already streamed,
+			// retrying would duplicate it: only heal the next turn instead.
 			c.useTextHistory()
+			if progress.textBytes+progress.reasoningBytes+progress.toolBytes == 0 {
+				payload.Input = degradedResponsesInput(requestMessages)
+				retryTracker, trackerErr := newGenerationTracker(ctx, emit)
+				if trackerErr != nil {
+					return ToolResponse{}, streamErr
+				}
+				retryTracker.textLimit = nativeTextLimit(c.cfg.MaxOutputTokens)
+				retryResp, retryCtx, retryErr := c.nativeRequest(ctx, "/responses", payload)
+				if retryErr == nil {
+					defer retryResp.Body.Close()
+					response, streamErr = consumeNativeResponses(retryCtx, retryResp.Body, retryTracker)
+					if streamErr != nil {
+						logModelFailure(retryCtx, "responses-tools-stream-degraded", c.cfg.Model, streamErr)
+					}
+					return response, streamErr
+				}
+			}
 		}
 		return response, streamErr
 	}

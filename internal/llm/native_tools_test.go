@@ -536,3 +536,50 @@ func mustJSON(value any) string {
 	data, _ := json.Marshal(value)
 	return string(data)
 }
+
+// GLM can reject a replayed history mid-stream with response.failed. When nothing
+// was emitted yet, the same turn is retried with text history instead of killing
+// the agent.
+func TestStreamedHistoryRejectionRetriesSameTurn(t *testing.T) {
+	var requests []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		requests = append(requests, body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if strings.Contains(mustJSON(body["input"]), `"type":"function_call"`) {
+			_, _ = w.Write([]byte("event: response.failed\n"))
+			_, _ = w.Write([]byte(`data: {"type":"response.failed","response":{"status":"failed","error":{"code":"invalid_request","message":"messages 参数非法。请检查文档。"}}}` + "\n\n"))
+			return
+		}
+		_, _ = w.Write([]byte(`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","call_id":"c9","name":"noop","arguments":"{}"}}` + "\n\n"))
+		_, _ = w.Write([]byte(`data: {"type":"response.completed","response":{"id":"resp_ok","status":"completed","output":[{"type":"function_call","call_id":"c9","name":"noop","arguments":"{}"}]}}` + "\n\n"))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(config.OpenAIConfig{BaseURL: server.URL, APIKey: "k", Model: "m", APIInterface: "responses",
+		MaxContextTokens: 1000, MaxOutputTokens: 100, TopP: 1, TimeoutSeconds: 5, Stream: true})
+	tools := []ToolDefinition{{Type: "function", Name: "noop", Description: "x", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	history := []Message{
+		{Role: RoleUser, Content: "看一下"},
+		{Type: "function_call", CallID: "c1", Name: "noop", Arguments: "{}"},
+		{Type: "function_call_output", CallID: "c1", Content: `{"ok":true}`},
+		{Role: RoleUser, Content: "继续"},
+	}
+	response, err := client.ChatTools(context.Background(), history, tools, func(Delta) error { return nil })
+	if err != nil {
+		t.Fatalf("same-turn retry must recover: %v", err)
+	}
+	if len(response.Calls) != 1 || response.Calls[0].CallID != "c9" {
+		t.Fatalf("calls = %+v", response.Calls)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("requests = %d, want native then degraded", len(requests))
+	}
+	if !strings.Contains(mustJSON(requests[0]["input"]), `"function_call"`) {
+		t.Fatal("first attempt should replay native items")
+	}
+	if strings.Contains(mustJSON(requests[1]["input"]), `"type":"function_call"`) {
+		t.Fatalf("retry should use text history: %s", mustJSON(requests[1]["input"]))
+	}
+}
