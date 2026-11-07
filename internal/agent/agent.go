@@ -54,17 +54,17 @@ type Agent struct {
 	// reducedReasoning sticks after a truncated generation: the same request
 	// would otherwise truncate again on every retry.
 	reducedReasoning bool
-	checkpoint             func(*Agent)
-	moderateTool           func(context.Context, ToolCall) string
-	moderatorControl       func(context.Context, ToolCall) string
-	reviewReport           func(context.Context, json.RawMessage) string
-	onDisconnect           func(error)
-	activity               func(context.Context) (context.Context, func())
-	deliverIRC             func(context.Context) bool
-	ircTool                func(context.Context, ToolCall) string
-	ircOnly                bool
-	ircPending             func() []IRCMessage
-	waitRetry              func(context.Context, time.Duration) error
+	checkpoint       func(*Agent)
+	moderateTool     func(context.Context, ToolCall) string
+	moderatorControl func(context.Context, ToolCall) string
+	reviewReport     func(context.Context, json.RawMessage) string
+	onDisconnect     func(error)
+	activity         func(context.Context) (context.Context, func())
+	deliverIRC       func(context.Context) bool
+	ircTool          func(context.Context, ToolCall) string
+	ircOnly          bool
+	ircPending       func() []IRCMessage
+	waitRetry        func(context.Context, time.Duration) error
 }
 
 const (
