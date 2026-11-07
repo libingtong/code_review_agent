@@ -94,3 +94,30 @@ func TestCompletionMenuRendersDescriptions(t *testing.T) {
 		t.Fatalf("selected row should be marked: %q", lines[0])
 	}
 }
+
+// Esc must always close a panel: mode/providers/tasks own their keys, and a
+// missing escape hatch is a dead end for the user.
+func TestEscClosesEveryPanel(t *testing.T) {
+	m, pool := newSourceModel(t, []config.ProviderConfig{sourceProvider("glm", true)})
+	m.AttachProviders(pool, &schedule.Gate{Schedule: &schedule.Schedule{}}, nil, nil)
+
+	open := map[string]func(){
+		"mode":        func() { m.modeCommand("") },
+		"providers":   func() { m.openProviders() },
+		"tasks":       func() { m.modal = &modalState{title: "t", tasks: &tasksModal{}} },
+		"window":      func() { m.openWindowPrompt() },
+		"concurrency": func() { m.concurrencyCommand("") },
+		"quota":       func() { m.showQuota("") },
+	}
+	for name, opener := range open {
+		m.modal = nil
+		opener()
+		if m.modal == nil {
+			t.Fatalf("%s: panel did not open", name)
+		}
+		m.updateModal(tea.KeyMsg{Type: tea.KeyEsc})
+		if m.modal != nil {
+			t.Fatalf("%s: Esc did not close the panel", name)
+		}
+	}
+}

@@ -167,6 +167,23 @@ func (m *Model) updateModal(msg tea.Msg) tea.Cmd {
 	if state.window != nil {
 		return m.updateWindow(msg)
 	}
+	// Panels that own their keys (mode/providers/tasks) still need a way out:
+	// handle the universal keys before dispatching, otherwise Esc is swallowed.
+	// Nested views (agent details, finding detail) keep their own "Esc = back"
+	// semantics and are left to the handler below.
+	if key, ok := msg.(tea.KeyMsg); ok {
+		switch key.String() {
+		case "esc", "ctrl+[":
+			nested := (state.agents && state.agentDetails) || (state.findings != nil && state.findings.detail)
+			if !nested {
+				m.pendingDir = ""
+				return m.closeModal()
+			}
+		case "ctrl+c":
+			cmd, _ := m.handleKey(key)
+			return cmd
+		}
+	}
 	if state.mode != nil {
 		return m.updateMode(msg)
 	}
