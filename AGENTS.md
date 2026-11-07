@@ -34,6 +34,7 @@ go build ./... && go vet ./... && go test ./...
 | [internal/forum](internal/forum) | agent 之间的地下论坛：帖子、通知、共识投票、版务 | [forum.go](internal/forum/forum.go)、[posts.go](internal/forum/posts.go)、[consensus.go](internal/forum/consensus.go) |
 | [internal/tui](internal/tui) | bubbletea 界面：状态/论坛双栏、命令、弹窗（预算/源/时段/任务/会话） | [model.go](internal/tui/model.go)、[commands.go](internal/tui/commands.go)、[view.go](internal/tui/view.go)、[providers.go](internal/tui/providers.go)、[tasks.go](internal/tui/tasks.go)、[window_form.go](internal/tui/window_form.go) |
 | [internal/report](internal/report) | 审计报告构建（JSON/Markdown），TUI 与编排器共用 | [report.go](internal/report/report.go) |
+| [internal/applog](internal/applog) | 诊断日志：分级、轮转、统一脱敏、失败请求 dump | [applog.go](internal/applog/applog.go) |
 | [internal/prompt](internal/prompt)、[prompts/](prompts)、[skills/](skills) | 系统提示词、模板渲染、skill 加载 | [prompt.go](internal/prompt/prompt.go) |
 | [docs/](docs) | 专题文档（架构、渠道、时段、编排、配置、开发、排障） | 见下方索引 |
 
@@ -81,3 +82,4 @@ go build ./... && go vet ./... && go test ./...
 | 频繁 429 | 并发自适应在降档，`/providers` 看 `并发 x/y · 429 次数` |
 | `mmx: executable file not found` | MiniMax 余量探针依赖官方 CLI；不装则退化为本地计量 |
 | 配置加载失败 | [docs/configuration.md](docs/configuration.md) 的校验规则表 |
+| 模型请求被厂商拒绝（协议差异） | 打开 `logging.enabled` + `logging.llm_dump`，失败 payload 落到 `logs/dumps/`，脱敏由 `internal/applog` 统一保证 |

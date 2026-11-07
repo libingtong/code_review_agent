@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"code-review-agent/internal/applog"
 	"code-review-agent/internal/config"
 	"code-review-agent/internal/forum"
 	"code-review-agent/internal/llm"
@@ -570,6 +571,7 @@ func (t *Team) Run(ctx context.Context, input string, emit func(Event)) {
 		t.mu.Lock()
 		stage := t.phase
 		t.mu.Unlock()
+		applog.L().Infof("阶段开始：%s", stage)
 		stopActors := t.startStageActors(runCtx, stage, input)
 		_, _ = t.board.Post("coordinator", "system", "*", 0, "阶段调度", stage+" 阶段启动；完成成员在阶段屏障前仍可回答 IRC。")
 		approved, complete := false, false
@@ -664,6 +666,7 @@ func (t *Team) Run(ctx context.Context, input string, emit func(Event)) {
 			_, _ = t.board.Post("coordinator", "system", "*", 0, "阶段交接", "全部侦察 Agent 已完成；新建审计 Agent，按需继承结构化地图、笔记、待办与论坛，不继承原始对话。")
 			continue
 		}
+		applog.L().Infof("阶段结束：%s", stage)
 		t.phase = "completed"
 		t.snapshot = t.aggregateLocked()
 		t.mu.Unlock()

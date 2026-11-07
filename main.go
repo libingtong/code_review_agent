@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"code-review-agent/internal/agent"
+	"code-review-agent/internal/applog"
 	"code-review-agent/internal/config"
 	"code-review-agent/internal/orchestrator"
 	"code-review-agent/internal/paniclog"
@@ -36,6 +37,45 @@ func main() {
 	}
 	if *auditDir != "" {
 		cfg.Workspace = *auditDir
+	}
+
+	logger, err := applog.Open(cfg.Logging)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "warning: 无法开启日志：%v\n", err)
+	}
+	applog.SetLogger(logger)
+	defer func() {
+		if logger != nil {
+			_ = logger.Close()
+		}
+	}()
+	if logger != nil {
+		logger.Infof("启动：config=%s workspace=%s", *cfgPath, cfg.Workspace)
+		for _, provider := range cfg.Providers {
+			key := "missing"
+			if provider.OpenAI.APIKey != "" {
+				key = "set"
+			}
+			logger.Infof("渠道 %s vendor=%s plan=%s model=%s base=%s interface=%s key=%s enabled=%v",
+				provider.ID, provider.VendorOf(), provider.Plan, provider.OpenAI.Model,
+				provider.OpenAI.BaseURL, provider.OpenAI.APIInterface, key, provider.IsEnabled())
+		}
+		fmt.Fprintf(os.Stderr, "日志：%s\n", logger.Path())
+	}
+
+	missing := cfg.MissingKeys()
+	enabled := 0
+	for _, provider := range cfg.Providers {
+		if provider.IsEnabled() {
+			enabled++
+		}
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(os.Stderr, "警告：以下渠道没有可用的 API key，将被跳过：%s\n", strings.Join(missing, "、"))
+	}
+	if enabled > 0 && len(missing) == enabled {
+		fmt.Fprintf(os.Stderr, "错误：所有启用渠道都缺少 API key。请在 .env 中配置后重试（例如 GLM_API_KEY / MINIMAX_API_KEY），或用 ./run.sh 启动。\n")
+		os.Exit(1)
 	}
 
 	prompts, err := prompt.Load(cfg.Prompts)

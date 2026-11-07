@@ -276,6 +276,7 @@ func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, t
 	}
 	defer progress.flushPending()
 	progress.textLimit = nativeTextLimit(c.cfg.MaxOutputTokens)
+	ctx = withPayload(ctx, payload)
 	resp, ctx, err := c.nativeRequest(ctx, "/responses", payload)
 	if err != nil && badHistoryError(err) && c.textHistoryEnabled() && hasNativeToolItems(requestMessages) {
 		// One failed turn, then the channel switches to text history for good.
@@ -291,11 +292,15 @@ func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, t
 		resp, ctx, err = c.nativeRequest(ctx, "/responses", payload)
 	}
 	if err != nil {
+		logModelFailure(ctx, "responses-tools", c.cfg.Model, err)
 		return ToolResponse{}, err
 	}
 	defer resp.Body.Close()
 	if c.cfg.Stream {
 		response, streamErr := consumeNativeResponses(ctx, resp.Body, progress)
+		if streamErr != nil {
+			logModelFailure(ctx, "responses-tools-stream", c.cfg.Model, streamErr)
+		}
 		if streamErr != nil && badHistoryError(streamErr) && c.textHistoryEnabled() && hasNativeToolItems(requestMessages) {
 			// Mid-stream failure cannot be retried without duplicating output, but
 			// the next turn must not repeat it: switch this channel to text history.
@@ -629,6 +634,7 @@ func (c *OpenAIClient) chatCompletionsTools(ctx context.Context, messages []Mess
 	}
 	defer progress.flushPending()
 	progress.textLimit = nativeTextLimit(c.cfg.MaxOutputTokens)
+	ctx = withPayload(ctx, payload)
 	resp, ctx, err := c.nativeRequest(ctx, "/chat/completions", payload)
 	if err != nil && payload.ToolChoice == "required" && toolChoiceRejected(err) {
 		// Endpoint does not understand tool_choice:"required": remember that and
@@ -641,11 +647,16 @@ func (c *OpenAIClient) chatCompletionsTools(ctx context.Context, messages []Mess
 		resp, ctx, err = c.nativeRequest(ctx, "/chat/completions", payload)
 	}
 	if err != nil {
+		logModelFailure(ctx, "chat-tools", c.cfg.Model, err)
 		return ToolResponse{}, err
 	}
 	defer resp.Body.Close()
 	if c.cfg.Stream {
-		return consumeNativeChat(ctx, resp.Body, progress)
+		response, streamErr := consumeNativeChat(ctx, resp.Body, progress)
+		if streamErr != nil {
+			logModelFailure(ctx, "chat-tools-stream", c.cfg.Model, streamErr)
+		}
+		return response, streamErr
 	}
 	body, err := readNativeBody(resp.Body, progress.textLimit)
 	accountUnreadableBody(ctx, body, err)

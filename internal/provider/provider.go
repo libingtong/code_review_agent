@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"code-review-agent/internal/applog"
 	"code-review-agent/internal/config"
 	"code-review-agent/internal/llm"
 )
@@ -391,6 +392,10 @@ func (p *Pool) OnSwitch(fn func(from, to, reason string)) {
 	p.mu.Unlock()
 }
 
+// appendNote records a routing or throttling notice for the next UI poll and
+// mirrors it into the diagnostic log (single choke point for these events).
+func (p *Pool) appendNoteLog(text string) { applog.L().Infof("provider: %s", text) }
+
 // appendNote records a routing or throttling notice for the next UI poll.
 func (p *Pool) appendNote(text string) {
 	p.mu.Lock()
@@ -399,6 +404,7 @@ func (p *Pool) appendNote(text string) {
 		p.notes = append([]string(nil), p.notes[len(p.notes)-32:]...)
 	}
 	p.notes = append(p.notes, p.now().Format("15:04:05")+" "+text)
+	p.appendNoteLog(text)
 }
 
 // DrainNotes returns and clears pending notices. The TUI calls it from its

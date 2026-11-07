@@ -108,6 +108,15 @@ schedule:
   on_window_close: pause
   poll_seconds: 30
 
+# 诊断日志：默认关闭。排查厂商协议差异时打开，并把 llm_dump 打开即可拿到失败请求
+logging:
+  enabled: false
+  level: info            # debug | info | warn | error | off
+  dir: logs
+  max_size_mb: 32
+  keep_files: 5
+  llm_dump: false        # true = 失败请求的完整（已脱敏）payload 落到 logs/dumps/
+
 orchestrator:
   enabled: true
   task_file: tasks.yaml

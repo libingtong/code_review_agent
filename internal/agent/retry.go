@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"code-review-agent/internal/applog"
 	"code-review-agent/internal/llm"
 	"code-review-agent/internal/provider"
 )
@@ -88,6 +89,7 @@ func (a *Agent) modelRequest(ctx context.Context, emit func(Event), request func
 			return "", fmt.Errorf("不在工作时段，已暂停并保留进度，窗口开启后自动继续: %w", err)
 		}
 		if isBillingExhausted(err) {
+			applog.L().Warnf("计费/额度错误，触发暂停：%v", err)
 			if a.onDisconnect != nil {
 				a.onDisconnect(err)
 			}
@@ -97,6 +99,7 @@ func (a *Agent) modelRequest(ctx context.Context, emit func(Event), request func
 			return "", fmt.Errorf("API余额或额度不足，已立即终止全队运行，不再重试: %w", err)
 		}
 		if provider.Classify(err) == provider.FailureRateLimited {
+			applog.L().Warnf("限流 429：%v", err)
 			// A 429 is a temporary vendor limit, not an outage: honour the reset
 			// hint instead of sleeping through the generic network cap.
 			delay := time.Minute
@@ -124,8 +127,10 @@ func (a *Agent) modelRequest(ctx context.Context, emit func(Event), request func
 			continue
 		}
 		if !isModelDisconnect(err) {
+			applog.L().Errorf("模型请求失败（不重试）：%v", err)
 			return "", err
 		}
+		applog.L().Warnf("模型连接异常，准备重试：%v", err)
 		if emit != nil {
 			emit(Event{Kind: "waiting", Content: fmt.Sprintf("模型服务断线；等待 %s 后继续重试（取消任务可停止）", retryDelay)})
 		}

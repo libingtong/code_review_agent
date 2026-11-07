@@ -436,6 +436,14 @@ tasks:
 | `sessions/tasks/<ID>.json` | 任务断点 | 该任务从头开始 |
 | `reports/<ID>/report.{json,md}` | 每任务产出 | 需重新导出 |
 
+**诊断日志**（默认关闭）：
+
+```yaml
+logging: {enabled: true, level: info, dir: logs, llm_dump: true}
+```
+
+开启后写 `logs/app-<时间戳>.log`，`llm_dump` 会额外把**失败请求的完整 payload（已脱敏）**落到 `logs/dumps/`。排查厂商协议差异（模型名、`tool_choice`、历史回放）时这是最快的手段；`/log` 可查看路径与临时调级。
+
 **几个容易踩的点**：
 
 - **压缩预留要按最紧的源算**：多源时压缩阈值取所有启用源里最小的 `context / output`。GLM 是 200k 上下文，所以 `agent.compress_buffer_tokens` 不能沿用单源 1M 时的 393216，否则配置加载直接报 "openai context cannot fit output plus reserve"。当前配置用 32768。

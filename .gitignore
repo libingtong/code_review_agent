@@ -30,6 +30,7 @@ x.json
 /sessions/
 /log_sessions/
 /state/
+/logs/
 /orchestrator/
 
 # ---- 抓包/临时二进制 ----

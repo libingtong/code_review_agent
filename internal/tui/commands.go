@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"code-review-agent/internal/applog"
 	"code-review-agent/internal/forum"
 	"code-review-agent/internal/report"
 	tea "github.com/charmbracelet/bubbletea"
@@ -17,7 +18,7 @@ import (
 func (m *Model) submit(value string) tea.Cmd {
 	m.suggestions = nil
 	command, arg := parseCommand(value)
-	if strings.HasPrefix(value, "/") || command == "go" || command == "budget" || command == "restore" || command == "report" || command == "list" || command == "export" || command == "save" || command == "session" || command == "sessions" || command == "agents" || command == "providers" || command == "quota" || command == "window" || command == "tasks" || command == "limit" || command == "concurrency" || command == "mode" {
+	if strings.HasPrefix(value, "/") || command == "go" || command == "budget" || command == "restore" || command == "report" || command == "list" || command == "export" || command == "save" || command == "session" || command == "sessions" || command == "agents" || command == "providers" || command == "quota" || command == "window" || command == "tasks" || command == "limit" || command == "concurrency" || command == "mode" || command == "log" {
 		switch command {
 		case "say":
 			return m.openBroadcast(arg)
@@ -111,6 +112,8 @@ func (m *Model) submit(value string) tea.Cmd {
 				m.addEvent("已强制切换到源 " + strings.TrimSpace(arg))
 			}
 			return m.openProviders()
+		case "log":
+			return m.logCommand(arg)
 		case "mode":
 			return m.modeCommand(arg)
 		case "concurrency":
@@ -162,6 +165,7 @@ func (m *Model) submit(value string) tea.Cmd {
 				"/budget：停止时打开预算表单；Tab 切换字段、←→ 选择模式、Ctrl+S 保存。0 表示不限；仅无限模式执行时间/token限额。",
 				"/providers：源列表；↑↓ 选择、Enter 强制切换、e 启停、r 刷新余量。/providers <ID> 直接切换。",
 				"/quota [ID]：查看各源 5 小时余量与恢复时间；带 ID 时刷新并显示原始响应，便于修正字段映射。",
+				"/log [debug|info|warn|error|off]：查看/调整诊断日志级别；日志文件路径见启动提示。",
 				"/mode [渠道] [模型]：选择使用的渠道/模型（写入 state/selection.json，下次启动沿用）；/mode auto 清除。",
 				"/concurrency [reset [ID]]：查看/清除并发学习值（稳定后的并发会被记住，下次启动沿用）。",
 				"/limit [ID] [90%|0.9|off|reserve N]：自设用量上限，只消耗窗口的一部分，把余量留给其它调用同一订阅的系统；设置会持久化。",
@@ -516,4 +520,24 @@ func (m *Model) exportReport(path string) {
 		return
 	}
 	m.addEvent(fmt.Sprintf("已完整导出 %d 个漏洞及全部审计记录：%s", built.Count, path))
+}
+
+// logCommand shows or adjusts the diagnostic log level at runtime.
+func (m *Model) logCommand(arg string) tea.Cmd {
+	logger := applog.L()
+	value := strings.ToLower(strings.TrimSpace(arg))
+	if logger == nil {
+		m.addEvent("日志未开启：在 config.yaml 设置 logging.enabled: true（可同时开 logging.llm_dump 记录失败请求）")
+		return nil
+	}
+	if value == "" {
+		m.addEvent(fmt.Sprintf("日志级别 %s · 文件 %s（/log debug|info|warn|error|off 调整）",
+			logger.Level(), logger.Path()))
+		return nil
+	}
+	level := applog.ParseLevel(value)
+	logger.SetLevel(level)
+	logger.Infof("日志级别调整为 %s（来自 /log）", level)
+	m.addEvent("日志级别：" + level.String())
+	return nil
 }

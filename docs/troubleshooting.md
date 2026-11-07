@@ -53,6 +53,19 @@
 | 会话目录太大 | `sessions/*.json` 每个几十 MB（保存了所有 worker 对话），可删旧文件 |
 | 想彻底重来 | 删 `state/`、`sessions/`、`orchestrator/`、`reports/`（都是运行态，不入库） |
 
+## 抓日志（推荐先做这个）
+
+```yaml
+logging: {enabled: true, level: debug, llm_dump: true}
+```
+
+重跑一次，然后把这两样带上来：
+
+- `logs/app-*.log`：路由、阶段、429/暂停、失败请求的错误原文；
+- `logs/dumps/*.json`：**失败请求的完整 payload（已脱敏）** ——厂商拒绝的具体字段就在里面。
+
+TUI 里 `/log` 会显示当前文件路径；`/log debug` 可以临时提级，不必重启。
+
 ## 报 bug 时请附带
 
 1. `-check` 的完整输出（含「探针」「模型」两行）；

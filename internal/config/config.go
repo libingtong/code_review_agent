@@ -25,6 +25,7 @@ type Config struct {
 	Concurrency  ConcurrencyConfig  `yaml:"concurrency"`
 	Schedule     ScheduleConfig     `yaml:"schedule"`
 	Orchestrator OrchestratorConfig `yaml:"orchestrator"`
+	Logging      LoggingConfig      `yaml:"logging"`
 }
 
 // MaxTeamAgents is the single upper bound shared by config validation and
@@ -116,6 +117,8 @@ func (cfg AgentConfig) BudgetDuration() (time.Duration, error) {
 }
 
 func Load(path string) (Config, error) {
+	// Make a directly-invoked binary behave like run.sh: keys usually live in .env.
+	loadDotEnvNear(path)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, err
@@ -150,6 +153,10 @@ func Load(path string) (Config, error) {
 		}
 	}
 	applyDefaults(&cfg)
+	cfg.Logging.applyDefaults()
+	if err := cfg.Logging.Validate(); err != nil {
+		return Config{}, err
+	}
 	if len(cfg.Providers) == 0 {
 		if err := validateReasoning(cfg.OpenAI, "openai"); err != nil {
 			return Config{}, err

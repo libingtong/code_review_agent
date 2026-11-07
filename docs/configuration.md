@@ -163,6 +163,23 @@ agent:
   auto_plan: true
 ```
 
+## logging
+
+```yaml
+logging:
+  enabled: false        # 默认关闭；开启后写入 dir/app-<时间戳>.log
+  level: info           # debug | info | warn | error | off
+  dir: logs
+  max_size_mb: 32       # 超过即轮转（app-….1.log）
+  keep_files: 5
+  llm_dump: false       # true：失败的模型请求（已脱敏）落到 logs/dumps/*.json
+```
+
+- 日志只写文件，不写 stderr（TUI 独占终端）；启动时会打印日志路径。
+- 所有级别都会脱敏：`sk-…`、`Authorization: Bearer …`、`api_key` 字段在落盘前被替换成 `***`。
+- `llm_dump` 是排查厂商协议差异的关键：失败请求的完整 payload + 错误原文会落成 JSON。
+- 运行时可用 `/log` 查看路径与级别，`/log debug|info|warn|error|off` 调整。
+
 ## 环境变量
 
 | 变量 | 用途 |
