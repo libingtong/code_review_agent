@@ -5,12 +5,14 @@ package applog
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"code-review-agent/internal/config"
@@ -72,6 +74,8 @@ type Logger struct {
 var (
 	globalMu sync.RWMutex
 	global   *Logger
+	// dumpSeq keeps concurrent dumps from colliding on the same file name.
+	dumpSeq atomic.Uint64
 )
 
 // L returns the process logger (never nil).
@@ -248,9 +252,28 @@ func (l *Logger) DumpJSON(name string, payload any) (string, error) {
 		return "", err
 	}
 	safe := regexp.MustCompile(`[^A-Za-z0-9._-]+`).ReplaceAllString(name, "-")
-	path := filepath.Join(dumpDir, time.Now().Format("20060102-150405.000")+"-"+safe+".json")
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		return "", err
+	// Two concurrent failures can land in the same millisecond. A shared file name
+	// then interleaves both writes and corrupts the artifact, so add a sequence
+	// number and create exclusively.
+	stamp := time.Now().Format("20060102-150405.000000")
+	var path string
+	for attempt := 0; ; attempt++ {
+		path = filepath.Join(dumpDir, fmt.Sprintf("%s-%d-%s.json", stamp, dumpSeq.Add(1), safe))
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if errors.Is(err, os.ErrExist) && attempt < 5 {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if _, err := file.Write(data); err != nil {
+			file.Close()
+			return "", err
+		}
+		if err := file.Close(); err != nil {
+			return "", err
+		}
+		break
 	}
 	l.Infof("dump written: %s", path)
 	return path, nil
