@@ -265,3 +265,108 @@ func TestInvalidCallInsideBatchIsRejected(t *testing.T) {
 		t.Fatal("missing call_id must be rejected")
 	}
 }
+
+// A read-only batch runs in the model's order, duplicates collapse, and the
+// per-turn cap is respected.
+func TestPlanBatchOrdersDedupesAndCaps(t *testing.T) {
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-8", phaseAudit, team.board)
+	defer a.tools.Close()
+	a.cfg.Agent.MaxToolsPerTurn = 3
+
+	calls := []llm.FunctionCall{
+		{CallID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`},
+		{CallID: "c2", Name: "search_content", Arguments: `{"query":"admin"}`},
+		{CallID: "c3", Name: "read_file", Arguments: `{"path":"a.go"}`}, // duplicate of c1
+		{CallID: "c4", Name: "list_files", Arguments: `{}`},             // over the cap
+	}
+	run, skipped := a.planBatch(calls)
+	if len(run) != 3 || len(skipped) != 1 {
+		t.Fatalf("run=%d skipped=%d", len(run), len(skipped))
+	}
+	if run[0].CallID != "c1" || run[1].CallID != "c2" || run[2].CallID != "c4" {
+		t.Fatalf("order/cap wrong: %+v", run)
+	}
+	if skipped[0].CallID != "c3" {
+		t.Fatalf("duplicate should be the skipped one: %+v", skipped)
+	}
+}
+
+// An exclusive tool takes the whole turn; everything else is acknowledged.
+func TestPlanBatchGivesExclusiveToolTheTurn(t *testing.T) {
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-7", phaseAudit, team.board)
+	defer a.tools.Close()
+	a.cfg.Agent.MaxToolsPerTurn = 3
+
+	calls := []llm.FunctionCall{
+		{CallID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`},
+		{CallID: "c2", Name: "read_tool_buffer", Arguments: `{"buffer_id":"b1","offset":0}`},
+		{CallID: "c3", Name: "search_content", Arguments: `{"query":"x"}`},
+	}
+	run, skipped := a.planBatch(calls)
+	if len(run) != 1 || run[0].Name != "read_tool_buffer" {
+		t.Fatalf("exclusive call must run alone: %+v", run)
+	}
+	if len(skipped) != 2 {
+		t.Fatalf("others must be acknowledged: %+v", skipped)
+	}
+}
+
+// Only one state-writing call per turn is applied.
+func TestPlanBatchAllowsSingleStateWrite(t *testing.T) {
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-6", phaseAudit, team.board)
+	defer a.tools.Close()
+	a.cfg.Agent.MaxToolsPerTurn = 3
+
+	calls := []llm.FunctionCall{
+		{CallID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`},
+		{CallID: "c2", Name: "file_review_update", Arguments: `{"path":"a.go","status":"reviewed"}`},
+		{CallID: "c3", Name: "todo_create", Arguments: `{"title":"x"}`},
+	}
+	run, skipped := a.planBatch(calls)
+	if len(run) != 2 {
+		t.Fatalf("run = %+v", run)
+	}
+	if run[0].Name != "read_file" || run[1].Name != "file_review_update" {
+		t.Fatalf("first write should win: %+v", run)
+	}
+	if len(skipped) != 1 || skipped[0].Name != "todo_create" {
+		t.Fatalf("second write must be skipped: %+v", skipped)
+	}
+}
+
+// recordResponse must keep one call item per call_id so the provider sees a
+// complete assistant turn.
+func TestRecordResponseKeepsEveryCall(t *testing.T) {
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-5", phaseAudit, team.board)
+	defer a.tools.Close()
+
+	a.recordResponse(llm.ToolResponse{
+		Content: "先看这三个文件",
+		Calls: []llm.FunctionCall{
+			{CallID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`},
+			{CallID: "c2", Name: "read_file", Arguments: `{"path":"b.go"}`},
+		},
+	})
+	calls, assistant := 0, 0
+	for _, message := range a.messages {
+		switch message.Type {
+		case "function_call":
+			calls++
+		case "":
+			if message.Role == llm.RoleAssistant {
+				assistant++
+			}
+		}
+	}
+	if calls != 2 || assistant != 1 {
+		t.Fatalf("history shape wrong: calls=%d assistant=%d", calls, assistant)
+	}
+}

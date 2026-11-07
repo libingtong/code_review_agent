@@ -55,7 +55,7 @@ go test ./internal/schedule/ -run TestPlan -v
 
 ## 关键不变量（改代码前先读）
 
-1. **原生工具协议**：`chatStreamOnce` 只认 `function_call`，一回合一个工具；`validateNativeResponse` 会拒绝文本协议、缺 `call_id`、未声明工具。
+1. **原生工具协议**：`chatStreamOnce` 只认 `function_call`；`validateNativeResponse` 拒绝文本协议、缺 `call_id`、未声明工具。一回合的多个调用由 `planBatch` 决定：按顺序执行、去重、只允许一个状态写、独占工具单独成回合，上限 `agent.max_tools_per_turn`。
 2. **使用量只在成功时提交**：`runRequest` 里 `commitUsage(err == nil)`；失败请求记账会凭空开窗口（历史 bug）。
 3. **窗口滚动只看 `resetAt`**：不要重新引入"必须 start 非零"的条件。
 4. **池内锁**：`nextProvider`/`hasReadyProvider`/`Statuses` 持锁，读时钟用 `clockOpenAt`，不要二次 `RLock`。

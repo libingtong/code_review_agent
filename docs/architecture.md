@@ -37,8 +37,8 @@ Team.Run
 for turn:
   prepareRequest   ← 广播/论坛通知注入、上下文压缩检查
   chatStream       ← modelRequest(重试/限流/换源) → chatStreamOnce → pool.ChatTools
-  recordResponse   ← 校验原生工具调用（必须有 call_id、只能是本轮声明的工具）
-  executeNativeTool← 恰好一个工具；结果回填为 tool 消息
+  recordResponse   ← 校验原生工具调用（必须有 call_id、只能是本轮声明的工具），并记录全部调用项
+  executeNativeTool← 按 planBatch 的结果依次执行工具，每个结果回填为独立消息
   checkpoint       ← 把 worker 快照交给 Team（UI 与阶段屏障只看快照）
 ```
 

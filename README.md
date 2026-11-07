@@ -43,6 +43,7 @@ https://github.com/huoji120/QWEN-EXO-booster
 | 单次 402 锁死渠道 5 小时 | 无 reset hint 也按整个窗口判死 | 只做 **5 分钟冷却**，探针/下次请求再判断 |
 | 重启后并发又回到 4，重新撞 429 | 学习值只在内存 | 稳定值落盘，启动即用（`concurrency.learn` / `pin`） |
 | 「找不到模型」无法自查 | 模型名写错只能靠猜 | `-check` 直接向端点要 `/models` 并列出可用名 |
+| 模型一回合返回多个工具调用 | 厂商常不遵守 `parallel_tool_calls:false` | `planBatch` 按顺序依次执行并统一返回结果；默认上限 1（旧行为），把 `agent.max_tools_per_turn` 调到 2-3 可换吞吐 |
 | 「请求已完成但没有原生工具调用」 | chat 协议没发 `tool_choice`，模型改用文字回答 | 强制 `tool_choice: "required"`，端点不支持时自动回退 `auto` 并记住；`-check` 可探测工具能力 |
 | 切到 responses 后每回合 404 | GLM 会发 response id 但拒绝 `previous_response_id` | 客户端丢弃续接、重发完整历史并记住该能力（MiniMax 支持续接，不受影响） |
 | 切换渠道后请求 400 | `previous_response_id` 是厂商私有的 | 跨渠道自动丢弃续接、改发完整历史 |

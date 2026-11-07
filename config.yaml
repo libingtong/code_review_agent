@@ -148,6 +148,9 @@ agent:
   log_session: false
   log_session_dir: log_sessions
   retry_attempts: 3
+  # 一回合最多执行几个工具调用：1 = 严格逐个（旧行为）；2-3 = 允许模型批量只读调用，
+  # 系统依次执行后统一返回结果（吞吐更高，偶有猜测调用）。
+  max_tools_per_turn: 1
   compress_at_ratio: 0.70
   # 必须 <= 最紧源(GLM 200k ctx / 65k out)的 context-output 差额，否则压缩阈值无解
   compress_buffer_tokens: 32768

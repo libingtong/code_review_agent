@@ -152,6 +152,7 @@ agent:
   compress_at_ratio: 0.70
   compress_buffer_tokens: 32768 # 省略则 (context-output)/2 与 output 取小
   max_tool_result_chars: 12000
+  max_tools_per_turn: 1        # 1 = 严格逐个；2-3 = 允许批量只读调用
   max_turns: 0                  # 仅普通模式生效
   retry_attempts: 3
   session_dir: sessions

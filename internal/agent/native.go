@@ -135,9 +135,78 @@ func (a *Agent) recordResponse(response llm.ToolResponse) (llm.FunctionCall, boo
 	if len(response.Calls) == 0 {
 		return llm.FunctionCall{}, false
 	}
-	call := response.Calls[0]
-	a.addMessage(llm.Message{Type: "function_call", ID: call.ID, CallID: call.CallID, Name: call.Name, Arguments: call.Arguments})
-	return call, true
+	// Record every call first: the batch is executed in order afterwards, and the
+	// provider expects one call item per call_id in the same assistant turn.
+	for _, call := range response.Calls {
+		a.addMessage(llm.Message{Type: "function_call", ID: call.ID, CallID: call.CallID, Name: call.Name, Arguments: call.Arguments})
+	}
+	return response.Calls[0], true
+}
+
+// exclusiveTools cannot share a turn: they depend on "this is the only action
+// right now" (single result buffer, phase transition, close vote, a sub-agent
+// run, or a blocking forum wait).
+var exclusiveTools = map[string]bool{
+	"read_tool_buffer": true,
+	"audit_plan_done":  true,
+	"end_audit":        true,
+	"verify_finding":   true,
+	"forum_wait":       true,
+}
+
+// stateWritingTools mutate review state; at most one per turn is applied, because
+// two writes in one batch would make the final state depend on call order that
+// the model never reasoned about.
+var stateWritingTools = map[string]bool{
+	"file_review_update":       true,
+	"todo_create":              true,
+	"todo_update":              true,
+	"project_note_update":      true,
+	"report_finding":           true,
+	"moderator_revoke_finding": true,
+}
+
+// planBatch decides which calls run now and which are acknowledged as skipped.
+//
+// Order is preserved: the model already committed to these arguments, so running
+// them in the order it wrote keeps behaviour predictable. Duplicates collapse, an
+// exclusive call runs alone, and only one state-writing call is applied.
+func (a *Agent) planBatch(calls []llm.FunctionCall) (run []llm.FunctionCall, skipped []llm.FunctionCall) {
+	limit := a.cfg.Agent.MaxToolsPerTurn
+	if limit <= 0 {
+		limit = 1
+	}
+	// An exclusive call needs the turn to itself.
+	for index, call := range calls {
+		if exclusiveTools[call.Name] {
+			others := append([]llm.FunctionCall{}, calls[:index]...)
+			others = append(others, calls[index+1:]...)
+			return []llm.FunctionCall{call}, others
+		}
+	}
+	seen := map[string]bool{}
+	wrote := false
+	for _, call := range calls {
+		key := call.Name + "\x00" + strings.Join(strings.Fields(call.Arguments), "")
+		if seen[key] {
+			skipped = append(skipped, call)
+			continue
+		}
+		seen[key] = true
+		if stateWritingTools[call.Name] {
+			if wrote {
+				skipped = append(skipped, call)
+				continue
+			}
+			wrote = true
+		}
+		if len(run) >= limit {
+			skipped = append(skipped, call)
+			continue
+		}
+		run = append(run, call)
+	}
+	return run, skipped
 }
 
 func (a *Agent) recordToolOutput(call llm.FunctionCall, result, full string) {

@@ -328,26 +328,40 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 			}
 			return
 		}
-		call, _ := a.recordResponse(answer)
+		a.recordResponse(answer)
 		a.commitResponseContinuation(answer)
 		emit(Event{Kind: "assistant_done"})
-		fullResult := a.executeNativeTool(activityCtx, emit, call)
+		run, skipped := a.planBatch(answer.Calls)
+		executed := 0
+		for index, batchCall := range run {
+			if a.runErr != nil {
+				break
+			}
+			executed++
+			fullResult := a.executeNativeTool(activityCtx, emit, batchCall)
+			if batchCall.Name == "audit_plan_done" && a.plan != nil && auditPlanAccepted(fullResult) {
+				a.completed = true
+			}
+			if batchCall.Name == "end_audit" && a.tools.Audit().Ended && auditPlanAccepted(fullResult) {
+				a.completed = true
+			}
+			if a.completed {
+				// A phase transition or a close vote ends the turn; later calls in
+				// the batch would contradict the state it just changed.
+				skipped = append(skipped, run[index+1:]...)
+				break
+			}
+		}
+		if len(skipped) > 0 {
+			a.recordSkippedCalls(skipped, "本回合未执行（独占工具独占一回合、同一状态写只允许一个、重复调用或超过每回合上限）；如需执行请在下回合单独发起")
+		}
 		if len(answer.Calls) > 1 {
-			// One tool per turn stays the rule; the extra calls are acknowledged so
-			// the provider sees a complete call/output pair for each call_id.
-			a.recordSkippedCalls(answer.Calls[1:], "本回合只执行一个工具；该调用被跳过，如需执行请在下一回合单独发起")
-			emit(Event{Kind: "info", Content: fmt.Sprintf("模型一次返回 %d 个工具调用，只执行了当前回合的一个，其余已标记跳过", len(answer.Calls))})
+			emit(Event{Kind: "info", Content: fmt.Sprintf("本回合收到 %d 个工具调用，执行 %d 个，跳过 %d 个", len(answer.Calls), executed, len(skipped))})
 		}
 		finish()
 		if a.runErr != nil {
 			emit(Event{Kind: "error", Content: a.runErr.Error()})
 			return
-		}
-		if call.Name == "audit_plan_done" && a.plan != nil && auditPlanAccepted(fullResult) {
-			a.completed = true
-		}
-		if call.Name == "end_audit" && a.tools.Audit().Ended && auditPlanAccepted(fullResult) {
-			a.completed = true
 		}
 		a.emitState(emit)
 		if a.completed {

@@ -1,1 +1,1 @@
-重要：仅通过本次 API 提供的原生 function calling 调用工具，每回合最多一个，参数必须是完整 JSON 对象。普通文本、推理、XML/DSML、JSON 示例和代码块只是内容，不会执行。工具错误通过匹配 call_id 的原生工具结果返回；根据错误修正后继续，不要猜测工具已经成功执行。
+重要：仅通过本次 API 提供的原生 function calling 调用工具，参数必须是完整 JSON 对象。一回合可以一次给出多个**互不依赖**的只读调用（读取文件、列表、搜索、Git 查询、状态查询）：系统会按顺序依次执行，并把结果一起返回；单回合执行数量受配置限制，未执行的调用会返回明确说明。如果下一步取决于前面的结果，请只发一个调用。独占类工具（read_tool_buffer、audit_plan_done、end_audit、verify_finding、forum_wait）必须单独一回合；同一回合最多只有一个写状态的调用（file_review_update、todo_*、project_note_update、report_finding）。普通文本、推理、XML/DSML、JSON 示例和代码块只是内容，不会执行。工具错误通过匹配 call_id 的原生工具结果返回；根据错误修正后继续，不要猜测工具已经成功执行。
