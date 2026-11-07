@@ -315,5 +315,3 @@ func RedactValue(value any) any {
 		return value
 	}
 }
-
-
