@@ -187,6 +187,12 @@ func (m Model) leftContent(width, height int) (pinned, lines []string) {
 		estimate = "≈"
 	}
 	pinned = append(pinned, fitLine(fmt.Sprintf("tokens %s%d / %s", estimate, b.UsedTokens, tokLimit), width))
+	if line := m.providerStatusLine(); line != "" {
+		pinned = append(pinned, wrapLines(line, width)...)
+	}
+	if m.orchestrator != nil {
+		pinned = append(pinned, wrapLines("任务 "+m.orchestrator.Summary(), width)...)
+	}
 	if b.StopReason != "" {
 		pinned = append(pinned, wrapLines(b.StopReason, width)...)
 	}

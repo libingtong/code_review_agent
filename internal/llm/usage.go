@@ -28,6 +28,22 @@ func WithUsageObserver(ctx context.Context, observer func(UsageUpdate)) context.
 	return context.WithValue(ctx, usageKey{}, observer)
 }
 
+// ChainUsageObserver adds fn without displacing an observer already present in
+// ctx. Multi-source routing needs its own accounting while the team budget keeps
+// receiving the same updates.
+func ChainUsageObserver(ctx context.Context, fn func(UsageUpdate)) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	existing, _ := ctx.Value(usageKey{}).(func(UsageUpdate))
+	return context.WithValue(ctx, usageKey{}, func(update UsageUpdate) {
+		if existing != nil {
+			existing(update)
+		}
+		fn(update)
+	})
+}
+
 type requestUsage struct {
 	ctx         context.Context
 	parts       map[responsesPart]int

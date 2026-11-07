@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"code-review-agent/internal/config"
 	"code-review-agent/internal/forum"
 	"code-review-agent/internal/llm"
 	"code-review-agent/internal/tools"
@@ -105,7 +106,13 @@ func (t *Team) SaveSession(path string) error {
 	if err = file.Close(); err != nil {
 		return err
 	}
-	return os.Rename(name, path)
+	if err = os.Rename(name, path); err != nil {
+		return err
+	}
+	t.mu.Lock()
+	t.sessionPath = path
+	t.mu.Unlock()
+	return nil
 }
 
 func (t *Team) LoadSession(path string) error {
@@ -142,7 +149,7 @@ func (t *Team) LoadSession(path string) error {
 	if s.Phase != phaseRecon && s.Phase != phaseAudit && s.Phase != "completed" {
 		return fmt.Errorf("无效的会话阶段 %q", s.Phase)
 	}
-	if s.ReconAgents < 1 || s.ReconAgents > 32 || s.AuditAgents < 1 || s.AuditAgents > 32 {
+	if s.ReconAgents < 1 || s.ReconAgents > config.MaxTeamAgents || s.AuditAgents < 1 || s.AuditAgents > config.MaxTeamAgents {
 		return fmt.Errorf("无效的会话团队规模")
 	}
 	for i, broadcast := range s.UserBroadcasts {
@@ -201,7 +208,7 @@ func (t *Team) LoadSession(path string) error {
 			return fmt.Errorf("已完成审计缺少 end_audit 状态")
 		}
 	}
-	if len(s.Workers) > 64 {
+	if len(s.Workers) > 2*config.MaxTeamAgents {
 		return fmt.Errorf("会话 worker 过多")
 	}
 	if err := validateIRCSession(s); err != nil {
@@ -402,5 +409,6 @@ func (t *Team) LoadSession(path string) error {
 		}
 	}
 	t.snapshot = t.aggregateLocked()
+	t.sessionPath = path
 	return nil
 }

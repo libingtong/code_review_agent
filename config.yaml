@@ -1,19 +1,118 @@
 workspace: .
 
+# 全局默认值：providers 里没写的字段从这里继承。
+# 这里原本只有这一处 API 配置；现在它是"默认源"，真正的多源在下面的 providers 段。
 openai:
-  api_interface: responses
-  base_url: https://api.deepseek.com/v1
-  api_key: sk-xxxxxxx
-  model: deepseek-v4-flash
+  api_interface: chat
+  base_url: https://api.minimax.cn/v1
+  api_key: ""
+  api_key_env: MINIMAX_API_KEY
+  model: MiniMax-M3.1-Flash
   thinking:
-    type: enabled
+    type: adaptive
   reasoning_effort: max
   temperature: 1
   top_p: 1
-  max_context_tokens: 1048576
-  max_output_tokens: 393216
-  timeout_seconds: 10
+  max_context_tokens: 1000000
+  max_output_tokens: 65536
+  timeout_seconds: 120
   stream: true
+
+# ============================== 多源 ==============================
+# 两个源按 5 小时窗口余量自动轮换；一侧见底换另一侧，都空则暂停并等窗口刷新。
+# key 两种写法都行：
+#   1) 写 api_key_env，把 key 放在 .env 里（推荐，不会进 git）
+#   2) 直接写 api_key（注意别提交）
+providers:
+  # 每个渠道各自持有自己的 5 小时窗口、自己的额度基数、自己的自设上限。
+  # 同一个厂商可以开多个渠道（不同 key / 不同套餐），互不影响。
+  - id: minimax
+    label: MiniMax M Plan
+    vendor: minimax
+    plan: minimax-mplan     # 决定额度单位(%)与探测方式(mmx quota)
+    enabled: true
+    weight: 2               # 权重高的优先用（MiniMax 额度更宽松）
+
+  - id: glm
+    label: GLM Coding Plan
+    vendor: glm             # 决定端点、探测端点与抵扣系数
+    plan: glm-max           # glm-lite=2000 / glm-pro=12000 / glm-max=28000 积分每 5 小时
+                            # （接口回 data.level=max，容量按 max 档算）
+    enabled: true
+    weight: 1
+    openai:
+      # GLM Coding Plan 的 OpenAI Chat 端点；Responses 协议用
+      # https://open.bigmodel.cn/api/v1 并把 api_interface 改成 responses
+      api_interface: chat
+      # 注意：要填"个人编程套餐"里新建的 key，与标准 API key 不通用
+      api_key: ""
+      api_key_env: GLM_API_KEY
+      thinking:
+        type: enabled
+      reasoning_effort: high
+      timeout_seconds: 300
+      stream: true
+    quota:
+      min_headroom: 0.10    # 余量低于 10% 提前让位，免得审计中途断供
+      max_usage_ratio: 0.9  # 本程序最多用 90%，剩下留给其它工具（/limit glm 90% 可改）
+    # 渠道级时段：覆盖全局设置。enabled: false = 忽略全局、全天可用。
+    # 想给 GLM 单独设窗口就改成 enabled: true + windows: [...]。
+    schedule:
+      enabled: false
+
+  # 例子：同厂商第二个渠道（另一份套餐或另一个 key），额度独立计算
+  # - id: glm-lite
+  #   label: GLM Lite（小额度，跑轻任务）
+  #   vendor: glm
+  #   plan: glm-lite
+  #   weight: 1
+  #   openai:
+  #     api_key_env: GLM_LITE_API_KEY
+  #   quota:
+  #     max_usage_ratio: 0.8
+
+# 5 小时窗口状态与自设上限的落盘位置（重启不会把半个窗口当成满额）
+quota:
+  state_file: state/quota.json
+  limits_file: state/limits.json
+
+routing:
+  switch_below: 0.15        # 当前源余量低于 15% 才换，保护上游缓存命中
+  min_dwell_seconds: 300    # 最短驻留 5 分钟，避免来回抖动
+  prefer: sticky
+
+# 频繁 429 说明并发超过套餐允许：每次 429 把该源并发减半，连续成功再慢慢加回。
+concurrency:
+  max_in_flight: 0          # 0 = 自动取团队规模（recon+audit+1）
+  initial_in_flight: 4
+  min_in_flight: 1
+  increase_after_successes: 20
+  increase_step: 1
+  decrease_factor: 0.5
+  increase_cooldown_seconds: 120
+
+# 工作时间段（全局）：enabled 改成 true 就生效（窗口外暂停，到点自动恢复）。
+# 渠道可以用 providers[].schedule 覆盖它，例如上面的 glm 是全天可用。
+# /window 可在界面里改，改动写入 state/schedule.json 并优先于这里。
+schedule:
+  enabled: true
+  timezone: Asia/Shanghai
+  store_file: state/schedule.json
+  windows:
+    - start: "21:00"        # 跨午夜：21:00 到次日 08:00
+      end: "08:00"
+      days: [mon, tue, wed, thu, fri, sat, sun]
+  on_window_close: pause
+  poll_seconds: 30
+
+orchestrator:
+  enabled: true
+  task_file: tasks.yaml
+  state_file: orchestrator/state.json
+  report_dir: reports
+  session_dir: sessions/tasks
+  continue_on_failure: true
+  retries: 1
 
 prompts:
   system: prompts/system.md
@@ -38,7 +137,8 @@ agent:
   log_session_dir: log_sessions
   retry_attempts: 3
   compress_at_ratio: 0.70
-  compress_buffer_tokens: 393216
+  # 必须 <= 最紧源(GLM 200k ctx / 65k out)的 context-output 差额，否则压缩阈值无解
+  compress_buffer_tokens: 32768
   auto_plan: true
   max_tool_result_chars: 12000
   moderator_enabled: true

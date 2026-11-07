@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"code-review-agent/internal/llm"
+	"code-review-agent/internal/provider"
 )
 
 func waitModelRetry(ctx context.Context, delay time.Duration) error {
@@ -84,7 +85,25 @@ func (a *Agent) modelRequest(ctx context.Context, emit func(Event), request func
 			if a.onDisconnect != nil {
 				a.onDisconnect(err)
 			}
+			if errors.Is(err, provider.ErrAllExhausted) {
+				return "", fmt.Errorf("所有启用源的 5 小时余量均已耗尽，团队已暂停并保留进度，余量恢复后自动继续: %w", err)
+			}
 			return "", fmt.Errorf("API余额或额度不足，已立即终止全队运行，不再重试: %w", err)
+		}
+		if provider.Classify(err) == provider.FailureRateLimited {
+			// A 429 is a temporary vendor limit, not an outage: honour the reset
+			// hint instead of sleeping through the generic network cap.
+			delay := time.Minute
+			if seconds, ok := provider.ResetHint(err); ok {
+				delay = time.Duration(seconds) * time.Second
+			}
+			if emit != nil {
+				emit(Event{Kind: "waiting", Content: fmt.Sprintf("模型服务限流；%s 后重试（切换源或暂停可停止等待）", delay)})
+			}
+			if err := wait(ctx, delay); err != nil {
+				return "", err
+			}
+			continue
 		}
 		if errors.Is(err, llm.ErrIncompleteGeneration) {
 			if incompleteRetries == 3 {
@@ -117,15 +136,36 @@ func (a *Agent) modelRequest(ctx context.Context, emit func(Event), request func
 	}
 }
 
+// modelDisconnected pauses the whole team on quota exhaustion. With a provider
+// pool the pause is resumable: the earliest 5h reset is recorded so the
+// scheduler can wake the team up instead of waiting for a manual go.
 func (t *Team) modelDisconnected(err error) {
 	if !isBillingExhausted(err) {
 		return
 	}
 	t.mu.Lock()
 	cancel := t.cancel
+	pool := t.pool
 	t.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
-	t.publish(Event{Kind: "error", Content: "API余额或额度不足：已立即终止全队运行（包括管理员），保留进度，不重试、不等待冷却；充值后可手动 go 继续。" + err.Error()})
+	reason := "API余额或额度不足"
+	var until time.Time
+	if pool != nil {
+		budget := pool.EarliestReset()
+		if budget.EarliestReset.After(t.clock()) {
+			reason, until = budget.Reason, budget.EarliestReset
+		}
+	}
+	t.mu.Lock()
+	t.pauseReason, t.pauseUntil = reason, until
+	t.mu.Unlock()
+	notice := "API余额或额度不足：已暂停全队（包括管理员），保留进度，不重试。"
+	if !until.IsZero() {
+		notice = fmt.Sprintf("%s；预计 %s 恢复余量后自动继续（也可随时输入 go 手动继续）。", reason, until.Local().Format("01-02 15:04"))
+	}
+	t.publish(Event{Kind: "paused", Content: notice + err.Error()})
+	t.publish(Event{Kind: "info", Content: notice})
+	t.emitState()
 }

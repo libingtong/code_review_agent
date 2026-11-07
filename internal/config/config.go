@@ -16,6 +16,29 @@ type Config struct {
 	CompressOpenAI OpenAIConfig `yaml:"compress_openai"`
 	Prompts        PromptConfig `yaml:"prompts"`
 	Agent          AgentConfig  `yaml:"agent"`
+
+	// Multi-source extensions. With no providers configured the loader
+	// synthesises a single source from OpenAI, so existing files keep working.
+	Providers    []ProviderConfig   `yaml:"providers"`
+	Quota        QuotaConfig        `yaml:"quota"`
+	Routing      RoutingConfig      `yaml:"routing"`
+	Concurrency  ConcurrencyConfig  `yaml:"concurrency"`
+	Schedule     ScheduleConfig     `yaml:"schedule"`
+	Orchestrator OrchestratorConfig `yaml:"orchestrator"`
+}
+
+// MaxTeamAgents is the single upper bound shared by config validation and
+// session restore. Recon and audit sizes must agree on it, otherwise a session
+// can be saved and then rejected on reload.
+const MaxTeamAgents = 666
+
+// MinCompressionSource is the tightest (context, output) pair across every
+// enabled source. Multi-source runs must compress for the smallest window or a
+// request that fits one provider is rejected by another.
+type MinCompressionSource struct {
+	Context int
+	Output  int
+	Source  string
 }
 
 type OpenAIConfig struct {
@@ -39,8 +62,8 @@ type ThinkingConfig struct {
 }
 
 func validateReasoning(cfg OpenAIConfig, section string) error {
-	if cfg.Thinking != nil && cfg.Thinking.Type != "enabled" {
-		return fmt.Errorf("%s.thinking.type must be enabled; disabled is not supported", section)
+	if cfg.Thinking != nil && cfg.Thinking.Type != "enabled" && cfg.Thinking.Type != "adaptive" {
+		return fmt.Errorf("%s.thinking.type must be enabled or adaptive; disabled is not supported", section)
 	}
 	switch cfg.ReasoningEffort {
 	case "", "low", "high", "max":
@@ -130,14 +153,17 @@ func Load(path string) (Config, error) {
 	if err := validateReasoning(cfg.OpenAI, "openai"); err != nil {
 		return Config{}, err
 	}
+	if err := validateProviders(&cfg); err != nil {
+		return Config{}, err
+	}
 	if err := validateReasoning(cfg.CompressOpenAI, "compress_openai"); err != nil {
 		return Config{}, err
 	}
 	if _, err := cfg.Agent.BudgetDuration(); err != nil {
 		return Config{}, err
 	}
-	if cfg.Agent.ReconAgents < 1 || cfg.Agent.ReconAgents > 666 || cfg.Agent.AuditAgents < 1 || cfg.Agent.AuditAgents > 666 {
-		return Config{}, fmt.Errorf("agent.recon_agents and agent.audit_agents must be between 1 and 666")
+	if cfg.Agent.ReconAgents < 1 || cfg.Agent.ReconAgents > MaxTeamAgents || cfg.Agent.AuditAgents < 1 || cfg.Agent.AuditAgents > MaxTeamAgents {
+		return Config{}, fmt.Errorf("agent.recon_agents and agent.audit_agents must be between 1 and %d", MaxTeamAgents)
 	}
 	if cfg.Agent.ModeratorIntervalSeconds < 1 || cfg.Agent.ModeratorIntervalSeconds > 86400 {
 		return Config{}, fmt.Errorf("agent.moderator_interval_seconds must be between 1 and 86400")
@@ -163,7 +189,11 @@ func Load(path string) (Config, error) {
 // Tool results are bounded UTF-8 bytes; reserve one token per byte conservatively,
 // plus the notification allowance and message framing, independently of the ratio.
 func (cfg Config) CompressionThreshold() (int, error) {
-	context, output := cfg.OpenAI.MaxContextTokens, cfg.OpenAI.MaxOutputTokens
+	limits, err := cfg.EffectiveTokenLimits()
+	if err != nil {
+		return 0, err
+	}
+	context, output := limits.Context, limits.Output
 	ratio := cfg.Agent.CompressAtRatio
 	if context <= 0 || output <= 0 || output >= context {
 		return 0, fmt.Errorf("openai token limits must be positive with output below context")

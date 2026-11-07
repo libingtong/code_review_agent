@@ -11,6 +11,9 @@ import (
 	"code-review-agent/internal/agent"
 	"code-review-agent/internal/config"
 	"code-review-agent/internal/forum"
+	"code-review-agent/internal/orchestrator"
+	"code-review-agent/internal/provider"
+	"code-review-agent/internal/schedule"
 	"code-review-agent/internal/tools"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -55,6 +58,11 @@ type Model struct {
 	bottomAt                                                           time.Time
 	bottomModal                                                        *modalState
 	bottomFocus                                                        int
+	cfg                                                                config.Config
+	pool                                                               *provider.Pool
+	gate                                                               *schedule.Gate
+	orchestrator                                                       *orchestrator.Runner
+	quotaRefresh                                                       func()
 }
 
 type operationEvent struct {
@@ -170,7 +178,7 @@ func New(runner *agent.Team, cfg config.Config, autoDir string) Model {
 	input.Focus()
 	input.CharLimit = 4000
 	input.Width = 116
-	m := Model{runner: runner, input: input, width: 120, height: 40, autoDir: autoDir, sessionDir: cfg.Agent.SessionDir, focus: 1, follow: [2]bool{true, true}}
+	m := Model{runner: runner, input: input, width: 120, height: 40, autoDir: autoDir, sessionDir: cfg.Agent.SessionDir, focus: 1, follow: [2]bool{true, true}, cfg: cfg}
 	m.budgetCfg = agent.BudgetStatus{InfiniteMode: cfg.Agent.InfiniteMode, Hours: cfg.Agent.BudgetHours, Minutes: cfg.Agent.BudgetMinutes, TokenLimit: cfg.Agent.BudgetTokens}
 	m.budget = runner.BudgetStatus()
 	m.forumCache = &forumRenderCache{}
@@ -178,6 +186,21 @@ func New(runner *agent.Team, cfg config.Config, autoDir string) Model {
 	m.addEvent("请输入要审计的目录；论坛只显示真实通信。")
 	return m
 }
+
+// AttachProviders wires the multi-source pool, the scheduling gate and the task
+// runner into an existing model. They stay optional so a single-source build and
+// the existing tests keep working unchanged.
+func (m *Model) AttachProviders(pool *provider.Pool, gate *schedule.Gate, runner *orchestrator.Runner, refresh func()) {
+	m.pool = pool
+	m.gate = gate
+	m.orchestrator = runner
+	m.quotaRefresh = refresh
+}
+
+// context is the lifetime context for on-demand administrative requests such as
+// a quota probe. It never cancels the audit itself.
+func (m *Model) context() context.Context { return context.Background() }
+
 func (m Model) Init() tea.Cmd {
 	cmds := []tea.Cmd{textinput.Blink, refreshTerminal()}
 	if strings.TrimSpace(m.autoDir) != "" {
@@ -221,6 +244,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		for _, e := range x.events {
 			m.applyEvent(e)
 		}
+		m.drainSourceNotes()
 		if m.forumDirty && !x.done {
 			m.refreshForumPage()
 		}
@@ -465,9 +489,40 @@ func (m *Model) stop() {
 	}
 	m.addEvent("正在停止；等待所有 worker 退出后才能继续。")
 }
-func (m *Model) runQuery(query string) tea.Cmd {
+
+// gateBlocked reports why work may not start now. Manual runs respect the same
+// working-hours and quota policy as the task queue, so a start cannot silently
+// conflict with the user's own schedule.
+func (m *Model) gateBlocked() bool {
+	if m.gate == nil {
+		return false
+	}
+	decision := m.gate.Check()
+	if decision.Allowed {
+		return false
+	}
+	message := "当前暂停：" + decision.Reason
+	if !decision.ResumeAt.IsZero() {
+		message += "，预计 " + decision.ResumeAt.Local().Format("01-02 15:04") + " 恢复"
+	}
+	message += "；/window 可改时段，/providers 可切换源；输入 go 可强制继续。"
+	m.addEvent(message)
+	return true
+}
+
+// runQuery starts a fresh audit and honours the gate.
+func (m *Model) runQuery(query string) tea.Cmd { return m.startRun(query, false) }
+
+// resumeRun is the "go" path: an explicit user override of the gate. Being
+// paused is exactly when a user types go, so it must not be refused.
+func (m *Model) resumeRun(query string) tea.Cmd { return m.startRun(query, true) }
+
+func (m *Model) startRun(query string, force bool) tea.Cmd {
 	if m.busy || m.saving {
 		m.addEvent("请等待当前运行或保存完成后再开始。")
+		return nil
+	}
+	if !force && m.gateBlocked() {
 		return nil
 	}
 	m.busy = true
@@ -521,7 +576,19 @@ func (m *Model) applyEvent(e agent.Event) {
 		}
 	}
 }
+
+// drainSourceNotes surfaces pool routing/throttling decisions as UI events.
+func (m *Model) drainSourceNotes() {
+	if m.pool == nil {
+		return
+	}
+	for _, note := range m.pool.DrainNotes() {
+		m.addEvent(note)
+	}
+}
+
 func (m *Model) syncTeam() {
+	m.drainSourceNotes()
 	m.budgetCfg = m.runner.BudgetStatus()
 	m.snapshot = m.runner.Snapshot()
 	m.workers = m.runner.Statuses()

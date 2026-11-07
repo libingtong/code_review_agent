@@ -1,0 +1,46 @@
+workspace: .
+
+openai:
+  api_interface: chat
+  base_url: https://api.minimax.cn/v1
+  api_key: ""
+  api_key_env: MINIMAX_API_KEY
+  model: MiniMax-M3.1-Flash
+  thinking:
+    type: adaptive
+  reasoning_effort: high
+  temperature: 1
+  top_p: 1
+  max_context_tokens: 1000000
+  max_output_tokens: 16384
+  timeout_seconds: 120
+  stream: true
+
+prompts:
+  system: prompts/system.md
+  compress: prompts/compress.md
+  skills_dir: skills
+  templates_dir: prompts/templates
+
+agent:
+  recon_agents: 1
+  #这边拉的越大效果越好,建议deepseek 32个以上,但是token也很多
+  audit_agents: 1
+  forum_wait_seconds: 5
+  # 无限模式：禁止模型结束审计；时间或 token 任一耗尽即停止。
+  # 时间合计为 0、token 为 0 分别表示不限；两项均为 0 则无限。
+  infinite_mode: false
+  budget_hours: 0
+  budget_minutes: 20
+  budget_tokens: 0
+  max_turns: 80
+  session_dir: sessions_smoke
+  log_session: true
+  log_session_dir: log_sessions
+  retry_attempts: 3
+  compress_at_ratio: 0.70
+  compress_buffer_tokens: 393216
+  auto_plan: false
+  max_tool_result_chars: 12000
+  moderator_enabled: false
+  moderator_interval_seconds: 60

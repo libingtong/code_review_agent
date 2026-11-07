@@ -81,6 +81,25 @@ func WithResponsesContinuation(ctx context.Context, previousResponseID string, m
 	return context.WithValue(ctx, responsesContinuationContextKey{}, ResponsesContinuation{PreviousResponseID: previousResponseID, Messages: copied})
 }
 
+// ResponseContinuationID exposes the continuation id scoped to ctx so a routing
+// layer can decide whether the id belongs to the provider it is about to use.
+func ResponseContinuationID(ctx context.Context) string {
+	continuation, ok := responsesContinuationFromContext(ctx)
+	if !ok {
+		return ""
+	}
+	return continuation.PreviousResponseID
+}
+
+// DropResponseContinuation removes a server-side lineage that the receiving
+// provider cannot understand, forcing the caller to send full history.
+func DropResponseContinuation(ctx context.Context) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	return context.WithValue(ctx, responsesContinuationContextKey{}, ResponsesContinuation{})
+}
+
 func responsesContinuationFromContext(ctx context.Context) (ResponsesContinuation, bool) {
 	if ctx == nil {
 		return ResponsesContinuation{}, false

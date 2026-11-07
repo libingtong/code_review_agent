@@ -27,6 +27,9 @@ type modalState struct {
 	agents       bool
 	budget       bool
 	budgetForm   *budgetForm
+	providers    *providerModal
+	tasks        *tasksModal
+	window       *windowModal
 	agentIndex   int
 	agentDetails bool
 	agentStarts  []int
@@ -159,6 +162,15 @@ func (m *Model) updateModal(msg tea.Msg) tea.Cmd {
 	state := m.modal
 	if state.budget {
 		return m.updateBudget(msg)
+	}
+	if state.window != nil {
+		return m.updateWindow(msg)
+	}
+	if state.providers != nil {
+		return m.updateProviders(msg)
+	}
+	if state.tasks != nil {
+		return m.updateTasks(msg)
 	}
 	if key, ok := msg.(tea.KeyMsg); ok && !state.compose {
 		if converted, consumed := m.bottomShortcut(key, true); consumed {
@@ -361,6 +373,13 @@ func (m Model) overlayModal(frame string) string {
 			status = "! " + m.modal.err
 		}
 		footer = "Tab 切换 · ←→ 模式 · Ctrl+S 确认 · Esc 取消"
+	} else if m.modal.window != nil {
+		content = m.windowLines(inner, bodyHeight)
+		status = "运行时生效，重启后回到 config.yaml 的设置"
+		if m.modal.err != "" {
+			status = "! " + m.modal.err
+		}
+		footer = "Tab 切换 · ←→ 开关 · Ctrl+S 应用 · Esc 取消"
 	} else if m.modal.compose {
 		content = strings.Split(m.modal.editor.View(), "\n")
 		status = fmt.Sprintf("%d / %d bytes", len(m.modal.editor.Value()), maxBroadcastBytes)
@@ -386,6 +405,12 @@ func (m Model) overlayModal(frame string) string {
 				footer = "↑↓ 滚动 · gg / End 到底 · Esc 返回列表"
 			}
 		}
+		if m.modal.providers != nil {
+			footer = "↑↓ 选择 · Enter 强制切换 · e 启停 · r 刷新余量 · Esc 关闭"
+		}
+		if m.modal.tasks != nil {
+			footer = "↑↓ 选择 · /tasks import <路径> · /tasks run · Esc 关闭"
+		}
 	}
 	if inner < 60 {
 		switch {
@@ -393,6 +418,12 @@ func (m Model) overlayModal(frame string) string {
 			footer = "Tab切换 · ^S保存 · Esc取消"
 		case m.modal.compose:
 			footer = "^S发送 · Esc取消"
+		case m.modal.window != nil:
+			footer = "Tab切换 · ^S应用 · Esc取消"
+		case m.modal.providers != nil:
+			footer = "↑↓选 · Enter切换 · e启停 · Esc关闭"
+		case m.modal.tasks != nil:
+			footer = "↑↓选 · /tasks import|run · Esc关闭"
 		case m.modal.agents && !m.modal.agentDetails, m.modal.findings != nil && !m.modal.findings.detail, m.modal.sessions != nil:
 			footer = "↑↓选 · Enter打开 · Esc关闭"
 		default:

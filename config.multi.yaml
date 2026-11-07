@@ -1,0 +1,202 @@
+# 多源示例：GLM Coding Plan + MiniMax M Plan
+#
+# 用法：
+#   cp .env.example .env && chmod 600 .env      # 填 GLM_API_KEY / MINIMAX_API_KEY
+#   ./code-review-agent -config config.multi.yaml -check    # 非交互自检
+#   ./code-review-agent -config config.multi.yaml           # 交互式
+#
+# 旧的单源 config.yaml 仍然可用：不写 providers 段时，程序会把 openai 段
+# 自动合成一个名为 default 的源，行为与升级前完全一致。
+
+workspace: .
+
+# 全局默认值：providers 里没写的字段从这里继承（base_url/model/token 上限等）
+openai:
+  api_interface: chat
+  base_url: https://api.minimax.cn/v1
+  api_key: ""
+  api_key_env: MINIMAX_API_KEY
+  model: MiniMax-M3.1-Flash
+  thinking:
+    type: adaptive
+  reasoning_effort: max
+  temperature: 1
+  top_p: 1
+  max_context_tokens: 1000000
+  max_output_tokens: 65536
+  timeout_seconds: 120
+  stream: true
+
+# 压缩预算（模型沿用当前生效的源）
+compress_openai:
+  max_context_tokens: 1000000
+  max_output_tokens: 65536
+
+providers:
+  # ------------------------------------------------------------------ GLM ---
+  - id: glm
+    label: GLM Coding Plan
+    vendor: glm
+    plan: glm-max             # lite=2000 / pro=12000 / max=28000 积分每 5 小时
+    enabled: true
+    weight: 1
+    openai:
+      # GLM Coding Plan 的 OpenAI Chat Completions 端点
+      # （Responses 协议用 https://open.bigmodel.cn/api/v1）
+      base_url: https://open.bigmodel.cn/api/coding/paas/v4
+      api_interface: chat
+      api_key: ""
+      api_key_env: GLM_API_KEY
+      model: glm-5.3
+      thinking:
+        type: enabled
+      reasoning_effort: high
+      max_context_tokens: 200000
+      max_output_tokens: 65536
+      timeout_seconds: 300
+      stream: true
+    # 渠道级时段：覆盖全局（示例：GLM 全天可用）
+    schedule:
+      enabled: false
+    quota:
+      window: 5h
+      min_headroom: 0.10          # 低于 10% 提前让位，避免中途断供
+      # 自设用量上限：本程序最多用掉窗口的 90%，剩下 10% 留给 Claude Code 等
+      # 其它共用这份订阅的工具。0.9 = 90%；1 = 不设上限。也可用 /limit 改。
+      max_usage_ratio: 0.9
+      reserve_units: 0            # 或按绝对值保留（credits 计量时用）
+      probe:
+        # 官方未公开余量 API；这里按社区通行端点配置。
+        # 字段对不上时用 /quota glm 看原始响应，然后只改 bind 路径即可。
+        type: http
+        interval_seconds: 120
+        timeout_seconds: 15
+        url: https://open.bigmodel.cn/api/monitor/usage/quota/limit
+        headers:
+          Authorization: "Bearer ${api_key}"
+        # 实测该接口 TOKENS_LIMIT 只给百分比；=100 是字面量 total。
+        unit: percent
+        bind:
+          used: ["data.limits[type=TOKENS_LIMIT].percentage", "data.limits[type=TOKENS_LIMIT].currentValue"]
+          total: ["=100", "data.limits[type=TOKENS_LIMIT].limit"]
+          reset: ["data.limits[type=TOKENS_LIMIT].nextResetTime"]
+          plan: ["data.level"]
+      local:
+        unit: credits
+        total: 12000                # Pro 档 5 小时积分；Lite=2000 / Max=28000
+        credits_per_million_tokens: 1545
+        peak:
+          days: [mon, tue, wed, thu, fri]
+          start: "14:00"
+          end: "18:00"
+        peak_factor: 1
+        offpeak_factor: 0.5         # 官方：非高峰按基础积分 50% 抵扣
+
+  # -------------------------------------------------------------- MiniMax ---
+  - id: mm
+    label: MiniMax M Plan
+    vendor: minimax
+    plan: minimax-mplan
+    enabled: true
+    weight: 2
+    openai:
+      base_url: https://api.minimax.cn/v1
+      api_interface: chat
+      api_key: ""
+      api_key_env: MINIMAX_API_KEY
+      model: MiniMax-M3.1-Flash
+      thinking:
+        type: adaptive
+      reasoning_effort: max
+      max_context_tokens: 1000000
+      max_output_tokens: 65536
+      timeout_seconds: 180
+      stream: true
+    quota:
+      window: 5h
+      max_usage_ratio: 0.9        # 同样只用到 90%
+      probe:
+        # 官方 CLI 自带 quota 子命令（需先 npm i -g mmx-cli && mmx auth login）
+        type: command
+        interval_seconds: 300
+        timeout_seconds: 20
+        command: ["mmx", "quota", "--output", "json"]
+        bind:
+          used: ["data.used_percent", "usage.used"]
+          total: ["data.total_percent", "usage.total"]
+          reset: ["data.reset_at", "usage.window_end"]
+      local:
+        unit: percent
+        total: 100
+
+quota:
+  # 5 小时窗口状态落盘位置：重启不会把半个窗口当成满额
+  state_file: state/quota.json
+  # /limit 改的用量上限落盘位置：重启后仍是同一个上限
+  limits_file: state/limits.json
+
+routing:
+  switch_below: 0.15        # 当前源余量低于 15% 才换，保护上游缓存命中
+  min_dwell_seconds: 300    # 最短驻留 5 分钟，避免来回抖动
+  prefer: sticky
+
+# 自适应并发（AIMD）：频繁 429 说明并发超过套餐允许，而不是额度不足。
+# 每次 429 把该源的并发减半（不低于 min），连续成功后再慢慢加回去。
+concurrency:
+  max_in_flight: 0          # 0 = 自动取团队规模（recon+audit+1）
+  initial_in_flight: 4      # 起步保守，向上试探比一次性打爆更便宜
+  min_in_flight: 1
+  increase_after_successes: 20
+  increase_step: 1
+  decrease_factor: 0.5
+  increase_cooldown_seconds: 120
+
+schedule:
+  enabled: true
+  timezone: Asia/Shanghai
+  # /window 的改动写在这里；存在时优先于本文件的 windows，可按进程持久化
+  store_file: state/schedule.json
+  windows:
+    - start: "21:00"        # 跨午夜：21:00 到次日 08:00
+      end: "08:00"
+      days: [mon, tue, wed, thu, fri, sat, sun]
+    # 可以加多个窗口，例如周末全天：
+    # - {start: "00:00", end: "23:59", days: [sat, sun]}
+  on_window_close: pause    # pause 立即暂停；finish_current_task 跑完当前任务
+  poll_seconds: 30
+
+orchestrator:
+  enabled: true
+  task_file: tasks.yaml
+  state_file: orchestrator/state.json
+  report_dir: reports
+  session_dir: sessions/tasks
+  continue_on_failure: true
+  retries: 1
+
+prompts:
+  system: prompts/system.md
+  compress: prompts/compress.md
+  skills_dir: skills
+  templates_dir: prompts/templates
+
+agent:
+  recon_agents: 4
+  audit_agents: 12
+  forum_wait_seconds: 60
+  infinite_mode: true
+  budget_hours: 3
+  budget_minutes: 0
+  budget_tokens: 0
+  max_turns: 0
+  session_dir: sessions
+  log_session: false
+  log_session_dir: log_sessions
+  retry_attempts: 3
+  compress_at_ratio: 0.70
+  # 必须 <= 最紧源(200k ctx / 65k out) 的 context-output 差额，否则压缩阈值无解
+  compress_buffer_tokens: 32768
+  auto_plan: true
+  max_tool_result_chars: 12000
+  moderator_enabled: true
+  moderator_interval_seconds: 60

@@ -54,7 +54,9 @@ func TestBillingFailureImmediatelyCancelsWholeTeam(t *testing.T) {
 			defer cancel()
 			var notified atomic.Bool
 			team.Run(ctx, "inspect", func(e Event) {
-				if e.Kind == "error" && strings.Contains(e.Content, "API余额或额度不足") {
+				// Quota exhaustion is now a resumable pause, surfaced as a
+				// dedicated event instead of a fatal error.
+				if (e.Kind == "paused" || e.Kind == "error") && strings.Contains(e.Content, "API余额或额度不足") {
 					notified.Store(true)
 				}
 			})

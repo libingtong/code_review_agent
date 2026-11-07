@@ -14,6 +14,7 @@ import (
 	"code-review-agent/internal/forum"
 	"code-review-agent/internal/llm"
 	"code-review-agent/internal/prompt"
+	"code-review-agent/internal/provider"
 	"code-review-agent/internal/tools"
 )
 
@@ -78,6 +79,11 @@ type Team struct {
 	stageOpen          bool
 	budget             auditBudget
 	userBroadcasts     []userBroadcast
+	sessionPath        string
+	pool               *provider.Pool
+	pauseReason        string
+	pauseUntil         time.Time
+	now                func() time.Time
 }
 
 func NewTeam(cfg config.Config, prompts prompt.Prompts, client, compressClient llm.Client, registry *tools.Registry) *Team {
@@ -185,6 +191,48 @@ func (t *Team) SetWorkspace(workspace string) error {
 }
 
 func (t *Team) Phase() string { t.mu.Lock(); defer t.mu.Unlock(); return t.phase }
+
+// Workspace is the directory the registry currently audits.
+func (t *Team) Workspace() string { return t.registry.Workspace() }
+
+// Pool is the multi-source router. Nil means the caller injected a single
+// llm.Client directly (tests, legacy embedding).
+func (t *Team) Pool() *provider.Pool { t.mu.Lock(); defer t.mu.Unlock(); return t.pool }
+
+// PauseInfo reports why the last run stopped and when it may resume. An empty
+// reason means the team is not quota-paused.
+func (t *Team) PauseInfo() (string, time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.pauseReason, t.pauseUntil
+}
+
+// ClearPause is called at admission so a resumed run is not still labelled as
+// paused by the previous attempt.
+func (t *Team) ClearPause() {
+	t.mu.Lock()
+	t.pauseReason, t.pauseUntil = "", time.Time{}
+	t.mu.Unlock()
+}
+
+// now is swappable in tests; production always uses the wall clock.
+func (t *Team) clock() time.Time {
+	if t.now != nil {
+		return t.now()
+	}
+	return time.Now()
+}
+
+// SetPool attaches the source pool used for quota-aware status and controls.
+func (t *Team) SetPool(pool *provider.Pool) { t.mu.Lock(); t.pool = pool; t.mu.Unlock() }
+
+// SessionPath is the last path this team was saved to or restored from. The
+// orchestrator uses it to resume an interrupted task without guessing.
+func (t *Team) SessionPath() string { t.mu.Lock(); defer t.mu.Unlock(); return t.sessionPath }
+
+// SetSessionPath lets a caller adopt an externally chosen session file before
+// the first save, so Watch/résumé logic sees a stable identity.
+func (t *Team) SetSessionPath(path string) { t.mu.Lock(); t.sessionPath = path; t.mu.Unlock() }
 func (t *Team) Snapshot() tools.Snapshot {
 	t.mu.Lock()
 	defer t.mu.Unlock()

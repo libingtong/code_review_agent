@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,15 +9,14 @@ import (
 	"strings"
 	"time"
 
-	"code-review-agent/internal/agent"
 	"code-review-agent/internal/forum"
-	"code-review-agent/internal/tools"
+	"code-review-agent/internal/report"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func (m *Model) submit(value string) tea.Cmd {
 	command, arg := parseCommand(value)
-	if strings.HasPrefix(value, "/") || command == "go" || command == "budget" || command == "restore" || command == "report" || command == "list" || command == "export" || command == "save" || command == "session" || command == "sessions" || command == "agents" {
+	if strings.HasPrefix(value, "/") || command == "go" || command == "budget" || command == "restore" || command == "report" || command == "list" || command == "export" || command == "save" || command == "session" || command == "sessions" || command == "agents" || command == "providers" || command == "quota" || command == "window" || command == "tasks" || command == "limit" {
 		switch command {
 		case "say":
 			return m.openBroadcast(arg)
@@ -99,9 +97,31 @@ func (m *Model) submit(value string) tea.Cmd {
 			}
 			// Do not recursively embed prior go prompts in the next run.
 			previous := m.lastQuery
-			cmd := m.runQuery(query)
+			cmd := m.resumeRun(query)
 			m.lastQuery = previous
 			return cmd
+		case "providers":
+			if arg != "" {
+				// /providers <id> forces a switch without opening the panel.
+				if err := m.pool.SetActive(strings.TrimSpace(arg)); err != nil {
+					m.addEvent("切换失败：" + err.Error())
+					return nil
+				}
+				m.addEvent("已强制切换到源 " + strings.TrimSpace(arg))
+			}
+			return m.openProviders()
+		case "limit":
+			return m.limitCommand(arg)
+		case "quota":
+			m.showQuota(arg)
+			return nil
+		case "window":
+			if arg != "" {
+				return m.windowCommand(arg)
+			}
+			return m.openWindowPrompt()
+		case "tasks":
+			return m.taskCommand(arg)
 		case "budget":
 			if m.busy || m.saving {
 				m.addEvent("运行或保存期间不可修改预算。")
@@ -134,6 +154,11 @@ func (m *Model) submit(value string) tea.Cmd {
 			m.showDetail("操作帮助", []string{
 				"输入目录或 /dir <目录>：开始新审计；支持带空格的引号路径。",
 				"/budget：停止时打开预算表单；Tab 切换字段、←→ 选择模式、Ctrl+S 保存。0 表示不限；仅无限模式执行时间/token限额。",
+				"/providers：源列表；↑↓ 选择、Enter 强制切换、e 启停、r 刷新余量。/providers <ID> 直接切换。",
+				"/quota [ID]：查看各源 5 小时余量与恢复时间；带 ID 时刷新并显示原始响应，便于修正字段映射。",
+				"/limit [ID] [90%|0.9|off|reserve N]：自设用量上限，只消耗窗口的一部分，把余量留给其它调用同一订阅的系统；设置会持久化。",
+				"/window：工作时间段表单（如 21:00-08:00，可跨午夜）；窗口外自动暂停、到点自动恢复。仅本次进程生效。",
+				"/tasks [import <路径> [--each-subdir] | run | stop | skip <ID> | retry <ID>]：导入并依次执行一批审计任务。",
 				"Esc：对话框内关闭/取消；其他时候请求暂停，worker 停止后 go 继续。",
 				"/say [消息]：打开广播草稿；Enter 换行，Ctrl+S 发送，Esc 取消。",
 				"/thread <ID>：展开帖子及楼内回复；/forum [页码]：返回倒序帖子列表。",
@@ -470,11 +495,6 @@ func (m *Model) showReport() {
 	})
 }
 
-type reportFiles struct {
-	Reviewed   []tools.FileReview `json:"reviewed"`
-	Unreviewed []tools.FileReview `json:"unreviewed"`
-}
-
 func (m *Model) exportReport(path string) {
 	if path == "" {
 		path = "report.json"
@@ -482,36 +502,10 @@ func (m *Model) exportReport(path string) {
 		path = cleanInputDir(path)
 	}
 	snapshot := m.runner.Snapshot()
-	revocations := m.runner.Revocations()
-	files := reportFiles{Reviewed: []tools.FileReview{}, Unreviewed: []tools.FileReview{}}
-	for _, f := range snapshot.Files {
-		if f.Status == "reviewed" || f.Status == "skipped" {
-			files.Reviewed = append(files.Reviewed, f)
-		} else {
-			files.Unreviewed = append(files.Unreviewed, f)
-		}
-	}
-	// Preserve every previous report field, and include project notes that were
-	// formerly available only through session persistence. UI truncation is not used.
-	report := struct {
-		GeneratedAt string                    `json:"generated_at"`
-		Audit       tools.AuditState          `json:"audit"`
-		Count       int                       `json:"count"`
-		Findings    []tools.Finding           `json:"findings"`
-		Revocations []agent.FindingRevocation `json:"revocations"`
-		Todos       []tools.Todo              `json:"todos"`
-		Files       reportFiles               `json:"files"`
-		Variables   []tools.VariableReview    `json:"variables"`
-		Flows       []tools.FlowReview        `json:"flows"`
-		Project     tools.ProjectNote         `json:"project_note"`
-	}{time.Now().Format(time.RFC3339), snapshot.Audit, len(snapshot.Findings), snapshot.Findings, revocations, snapshot.Todos, files, snapshot.Variables, snapshot.Flows, snapshot.Project}
-	data, err := json.MarshalIndent(report, "", "  ")
-	if err == nil {
-		err = os.WriteFile(path, data, 0600)
-	}
-	if err != nil {
+	built := report.Build(snapshot, m.runner.Revocations())
+	if err := report.WriteJSON(path, built); err != nil {
 		m.addEvent("导出失败：" + err.Error())
 		return
 	}
-	m.addEvent(fmt.Sprintf("已完整导出 %d 个漏洞及全部审计记录：%s", len(snapshot.Findings), path))
+	m.addEvent(fmt.Sprintf("已完整导出 %d 个漏洞及全部审计记录：%s", built.Count, path))
 }

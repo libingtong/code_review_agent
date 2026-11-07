@@ -11,11 +11,11 @@ func TestThinkingConfigurationRejectsDisableAndKeepsIndependentEffort(t *testing
 			t.Fatal("unsupported effort accepted")
 		}
 	}
-	cfg, err := loadBudgetConfig(t, "openai:\n  reasoning_effort: max\ncompress_openai:\n  reasoning_effort: low\n")
+	cfg, err := loadBudgetConfig(t, "openai:\n  thinking:\n    type: adaptive\n  reasoning_effort: max\ncompress_openai:\n  reasoning_effort: low\n")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.OpenAI.ReasoningEffort != "max" || cfg.CompressOpenAI.ReasoningEffort != "low" || cfg.OpenAI.Thinking.Type != "enabled" || cfg.CompressOpenAI.Thinking.Type != "enabled" {
-		t.Fatal("explicit per-model effort overridden or thinking disabled")
+	if cfg.OpenAI.ReasoningEffort != "max" || cfg.CompressOpenAI.ReasoningEffort != "low" || cfg.OpenAI.Thinking.Type != "adaptive" || cfg.CompressOpenAI.Thinking.Type != "enabled" {
+		t.Fatal("explicit per-model effort overridden or thinking mode lost")
 	}
 }

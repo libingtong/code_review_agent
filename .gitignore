@@ -5,3 +5,13 @@ config_gpt.yaml
 config_ds.yaml
 code-review-agent.exe
 config_grok.yaml
+/code-review-agent
+.gocache/
+.gopath/
+.gotmp/
+.env
+sessions/
+# 运行态目录只忽略仓库根下的，别误伤 internal/orchestrator 这类源码目录
+/state/
+/orchestrator/
+/reports/
