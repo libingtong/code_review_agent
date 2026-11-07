@@ -156,6 +156,9 @@ func (t *Team) modelDisconnected(err error) {
 		budget := pool.EarliestReset()
 		if budget.EarliestReset.After(t.clock()) {
 			reason, until = budget.Reason, budget.EarliestReset
+			if budget.Detail != "" {
+				reason += "（" + budget.Detail + "）"
+			}
 		}
 	}
 	t.mu.Lock()

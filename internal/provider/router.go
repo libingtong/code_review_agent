@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"code-review-agent/internal/llm"
@@ -35,14 +36,14 @@ func runRequest[T any](p *Pool, ctx context.Context, label string, emitted *bool
 		provider := p.nextProvider(excluded)
 		if provider == nil {
 			if lastErr == nil {
-				return zero, "", ErrAllExhausted
+				return zero, "", fmt.Errorf("%w：%s", ErrAllExhausted, p.ExhaustionReport())
 			}
 			if !p.hasReadyProvider() {
-				return zero, "", fmt.Errorf("%w（最近错误：%v）", ErrAllExhausted, lastErr)
+				return zero, "", fmt.Errorf("%w：%s（最近错误：%v）", ErrAllExhausted, p.ExhaustionReport(), lastErr)
 			}
 			return zero, "", lastErr
 		}
-		requestCtx := p.observe(ctx, provider.ID())
+		requestCtx, commitUsage := p.observe(ctx, provider.ID())
 		requestCtx = p.affinityContext(requestCtx, provider.ID())
 		client := provider.client
 		if label == "chat" && provider.aux != nil {
@@ -55,6 +56,7 @@ func runRequest[T any](p *Pool, ctx context.Context, label string, emitted *bool
 		}
 		result, err := call(requestCtx, client)
 		release()
+		commitUsage(err == nil)
 		if err == nil {
 			p.markSuccess(provider.ID())
 			if changed, limit := provider.limiter.OnSuccess(); changed {
@@ -91,7 +93,7 @@ func runRequest[T any](p *Pool, ctx context.Context, label string, emitted *bool
 				if next := p.nextProvider(excluded); next != nil {
 					continue
 				}
-				return zero, provider.ID(), fmt.Errorf("%w（最近错误：%v）", ErrAllExhausted, lastErr)
+				return zero, provider.ID(), fmt.Errorf("%w：%s（最近错误：%v）", ErrAllExhausted, p.ExhaustionReport(), lastErr)
 			}
 			delay := time.Duration(2*throttled) * time.Second
 			if seconds, ok := resetHint(err); ok {
@@ -124,7 +126,7 @@ func runRequest[T any](p *Pool, ctx context.Context, label string, emitted *bool
 		lastErr = err
 		next := p.nextProvider(excluded)
 		if next == nil {
-			return zero, provider.ID(), fmt.Errorf("%w（最近错误：%v）", ErrAllExhausted, lastErr)
+			return zero, provider.ID(), fmt.Errorf("%w：%s（最近错误：%v）", ErrAllExhausted, p.ExhaustionReport(), lastErr)
 		}
 		p.notifySwitch(provider.ID(), next.ID(), fmt.Sprintf("%s：%v", kind.String(), err))
 	}
@@ -183,6 +185,54 @@ func (p *Pool) nextProvider(excluded map[string]bool) *Provider {
 	return nil
 }
 
+// ExhaustionReport names the reason each enabled channel cannot take work. When
+// every source is unusable the user needs to know which brake engaged.
+func (p *Pool) ExhaustionReport() string {
+	now := p.now()
+	p.mu.RLock()
+	providers := append([]*Provider(nil), p.providers...)
+	clock := p.clock
+	p.mu.RUnlock()
+	var parts []string
+	for _, provider := range providers {
+		if !provider.Enabled() {
+			continue
+		}
+		status := provider.quota.Status(now)
+		switch {
+		case !clockOpenAt(clock, provider.ID(), now):
+			parts = append(parts, provider.ID()+": 时段外")
+		case status.Capped:
+			parts = append(parts, fmt.Sprintf("%s: 已达自设上限 %.0f%%", provider.ID(), status.MaxUsageRatio*100))
+		case now.Before(status.CooldownTill):
+			parts = append(parts, fmt.Sprintf("%s: 冷却至 %s", provider.ID(), status.CooldownTill.Local().Format("15:04")))
+		case status.Exhausted:
+			reset := "未知"
+			if !status.ResetAt.IsZero() {
+				reset = status.ResetAt.Local().Format("01-02 15:04")
+			}
+			parts = append(parts, fmt.Sprintf("%s: 额度耗尽（重置 %s）", provider.ID(), reset))
+		default:
+			parts = append(parts, provider.ID()+": 不可用")
+		}
+		if status.LastError != "" {
+			parts[len(parts)-1] += "；最近错误 " + shortStatus(status.LastError)
+		}
+	}
+	if len(parts) == 0 {
+		return "没有启用中的渠道"
+	}
+	return strings.Join(parts, "；")
+}
+
+func shortStatus(text string) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) <= 160 {
+		return text
+	}
+	return text[:160] + "…"
+}
+
 func (p *Pool) hasReadyProvider() bool {
 	now := p.now()
 	p.mu.RLock()
@@ -211,7 +261,10 @@ func (p *Pool) quarantine(provider *Provider, kind FailureKind, err error) {
 		provider.quota.markRateLimited(now, 60*time.Second, describeFailure(kind, provider.ID(), err))
 		return
 	}
-	provider.quota.markExhausted(now, now.Add(provider.quota.windowSeconds()), describeFailure(kind, provider.ID(), err))
+	// No retry hint: park it briefly and let the probe or the next attempt
+	// decide. Declaring the window empty here is how a healthy subscription ends
+	// up looking drained until the next 5h reset.
+	provider.quota.park(now, now.Add(quarantineCooldown), describeFailure(kind, provider.ID(), err))
 }
 
 func (p *Pool) markSuccess(id string) {

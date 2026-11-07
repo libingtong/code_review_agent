@@ -120,8 +120,10 @@ func TestBillingFailureSwitchesSource(t *testing.T) {
 		t.Fatalf("failing source hit %d times, want exactly 1", hits)
 	}
 	statuses := pool.Statuses()
-	if !statuses[0].Exhausted {
-		t.Fatalf("source a must be marked exhausted: %+v", statuses[0])
+	// A single unconfirmed 402 parks the channel briefly instead of draining the
+	// whole 5h window, so either signal is acceptable here.
+	if !statuses[0].Exhausted && !statuses[0].CooldownTill.After(time.Now()) {
+		t.Fatalf("source a must be parked or exhausted: %+v", statuses[0])
 	}
 	if statuses[0].LastError == "" {
 		t.Fatal("failure reason must be recorded for /providers")
@@ -223,6 +225,7 @@ func TestUsageIsChargedToTheServingSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Intermediate estimates are ignored; only the final total is billed.
 	pool.chargeUsage("a", llm.UsageUpdate{RequestID: 1, TotalTokens: 500})
 	pool.chargeUsage("a", llm.UsageUpdate{RequestID: 1, TotalTokens: 1000, Final: true})
 	statuses := pool.Statuses()
@@ -231,10 +234,6 @@ func TestUsageIsChargedToTheServingSource(t *testing.T) {
 	}
 	if statuses[1].Used != 0 {
 		t.Fatalf("usage leaked to the idle source: %v", statuses[1].Used)
-	}
-	// Final update must clear the incremental meter.
-	if len(pool.usageMeter) != 0 {
-		t.Fatalf("usage meter should be empty after Final, got %d", len(pool.usageMeter))
 	}
 }
 

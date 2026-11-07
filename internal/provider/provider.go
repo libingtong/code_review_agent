@@ -120,9 +120,6 @@ type Pool struct {
 	quotaStatePath string
 	// limitsPath persists runtime /limit changes.
 	limitsPath string
-	// usageMeter tracks per-request token totals per provider so incremental
-	// usage updates are charged exactly once.
-	usageMeter map[usageKey]int64
 }
 
 // NewPool builds one client per configured source. Provider-specific settings

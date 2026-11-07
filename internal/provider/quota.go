@@ -81,7 +81,9 @@ func newQuotaWindow(cfg config.ProviderConfig) (*QuotaWindow, error) {
 // expired window returns to idle instead of starting a new one, because the
 // vendor only starts the next window on the first request.
 func (q *QuotaWindow) advanceLocked(now time.Time) {
-	if !q.start.IsZero() && !q.resetAt.IsZero() && !now.Before(q.resetAt) {
+	// resetAt alone is enough: a channel can be quarantined before it ever
+	// recorded usage (start stays zero), and that must still expire.
+	if !q.resetAt.IsZero() && !now.Before(q.resetAt) {
 		q.used = 0
 		q.start = time.Time{}
 		q.resetAt = time.Time{}
@@ -258,6 +260,24 @@ func (q *QuotaWindow) observePlan(plan string) {
 	q.mu.Unlock()
 }
 
+// quarantineCooldown is how long an unconfirmed quota error parks a channel.
+// A single 402 may be a gateway or billing hiccup, so it must not lock the
+// channel for a whole window.
+const quarantineCooldown = 5 * time.Minute
+
+// park applies a short cooldown without declaring the window empty. Only a
+// vendor reading (probe) or a vendor error carrying a reset hint may mark a
+// window exhausted.
+func (q *QuotaWindow) park(now time.Time, until time.Time, reason string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.updatedAt = now
+	q.reason = reason
+	if until.After(now) && until.After(q.cooldown) {
+		q.cooldown = until
+	}
+}
+
 func (q *QuotaWindow) markExhausted(now time.Time, until time.Time, reason string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -339,6 +359,11 @@ func (q *QuotaWindow) restore(state quotaState, now time.Time) {
 	q.used = state.Used
 	q.start, q.resetAt, q.cooldown = state.Start, state.ResetAt, state.Cooldown
 	q.exhausted, q.source, q.reason = state.Exhausted, state.Source, state.Reason
+	if q.exhausted && !q.resetAt.After(now) {
+		// A persisted "exhausted" without a future reset instant is stale state;
+		// keeping it would block the channel forever.
+		q.exhausted, q.reason = false, ""
+	}
 	q.updatedAt = state.UpdatedAt
 	q.advanceLocked(now)
 }
@@ -378,6 +403,8 @@ func chargeFor(l config.LocalQuotaConfig, tokens int64, at time.Time) float64 {
 type QuotaBudget struct {
 	EarliestReset time.Time
 	Reason        string
+	// Detail explains each channel's individual brake (cooldown, cap, window).
+	Detail string
 }
 
 // EarliestReset is the soonest moment any enabled source could become usable
@@ -388,19 +415,25 @@ func (p *Pool) EarliestReset() QuotaBudget {
 	providers := append([]*Provider(nil), p.providers...)
 	p.mu.RUnlock()
 	var earliest time.Time
-	cappedOnly := true
+	cappedOnly, exhaustedAny, cooling := true, false, false
+	considered := 0
 	for _, provider := range providers {
 		if !provider.Enabled() {
 			continue
 		}
+		considered++
 		if provider.quota.Ready(now) {
-			// Anything still usable means this is not a pause: the cap only stops
-			// the sources that reached it.
 			return QuotaBudget{}
 		}
 		status := provider.quota.Status(now)
-		if status.Exhausted || !status.Capped {
+		if status.Exhausted {
+			exhaustedAny = true
 			cappedOnly = false
+		} else if status.Capped {
+			exhaustedAny = false
+		} else {
+			cappedOnly = false
+			cooling = true
 		}
 		candidate := status.ResetAt
 		if status.CooldownTill.After(candidate) {
@@ -413,14 +446,22 @@ func (p *Pool) EarliestReset() QuotaBudget {
 			earliest = candidate
 		}
 	}
+	if considered == 0 {
+		return QuotaBudget{}
+	}
 	if earliest.IsZero() {
 		earliest = now.Add(5 * time.Minute)
 	}
+	// The reason must match reality: a 5 minute cooldown is not a drained 5 hour
+	// window, and saying so sends people looking for a quota problem.
 	reason := "所有启用源的 5 小时余量均已耗尽"
-	if cappedOnly {
+	switch {
+	case cappedOnly:
 		reason = "所有启用源均已达到自设用量上限（保留余量给其它工具），窗口刷新后自动继续"
+	case !exhaustedAny && cooling:
+		reason = "所有启用源均在限流冷却中，稍后自动重试"
 	}
-	return QuotaBudget{EarliestReset: earliest, Reason: reason}
+	return QuotaBudget{EarliestReset: earliest, Reason: reason, Detail: p.ExhaustionReport()}
 }
 
 // SetUsageLimit changes one source's self-imposed cap and persists it, so a
@@ -617,60 +658,65 @@ func (p *Pool) LoadQuotaState() error {
 	return nil
 }
 
-// ChargeUsage attributes one request's tokens to the provider that served it.
-// It is installed as an additional usage observer for the duration of a request.
+// chargeUsage attributes one finished request to the provider that served it.
+// Only final updates carry an authoritative total, so intermediate estimates are
+// ignored; this entry point exists for direct accounting (UI, tests).
 func (p *Pool) chargeUsage(providerID string, update llm.UsageUpdate) {
-	if update.TotalTokens <= 0 {
+	if update.TotalTokens <= 0 || !update.Final {
 		return
 	}
 	provider := p.find(providerID)
 	if provider == nil {
 		return
 	}
-	now := p.now()
-	seen := p.usageSeen(providerID, update.RequestID)
-	delta := update.TotalTokens - seen
-	if delta <= 0 {
+	provider.quota.RecordUsage(update.TotalTokens, p.now())
+}
+
+// attemptMeter accumulates a single logical request's usage so it can be
+// committed only if the request actually succeeded.
+type attemptMeter struct {
+	mu    sync.Mutex
+	seen  map[uint64]int64
+	total int64
+}
+
+func (m *attemptMeter) Add(update llm.UsageUpdate) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if update.TotalTokens < 0 {
 		return
 	}
-	p.rememberUsage(providerID, update.RequestID, update.TotalTokens, update.Final)
-	provider.quota.RecordUsage(delta, now)
+	if m.seen == nil {
+		m.seen = map[uint64]int64{}
+	}
+	previous := m.seen[update.RequestID]
+	if delta := update.TotalTokens - previous; delta > 0 {
+		m.total += delta
+	}
+	m.seen[update.RequestID] = update.TotalTokens
 }
 
-func (p *Pool) usageSeen(providerID string, requestID uint64) int64 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.usageMeter == nil {
-		return 0
-	}
-	return p.usageMeter[usageKey{providerID: providerID, requestID: requestID}]
+func (m *attemptMeter) Take() int64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	total := m.total
+	m.total, m.seen = 0, nil
+	return total
 }
 
-func (p *Pool) rememberUsage(providerID string, requestID uint64, total int64, final bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.usageMeter == nil {
-		p.usageMeter = map[usageKey]int64{}
+// observe accumulates usage for one attempt. commit reports whether the attempt
+// succeeded; failed requests are not charged, otherwise a rejected call would
+// burn quota and even open a new window (start/resetAt written on error).
+func (p *Pool) observe(ctx context.Context, providerID string) (context.Context, func(bool)) {
+	meter := &attemptMeter{}
+	observed := llm.ChainUsageObserver(ctx, meter.Add)
+	return observed, func(commit bool) {
+		tokens := meter.Take()
+		if !commit || tokens <= 0 {
+			return
+		}
+		if provider := p.find(providerID); provider != nil {
+			provider.quota.RecordUsage(tokens, p.now())
+		}
 	}
-	key := usageKey{providerID: providerID, requestID: requestID}
-	if final {
-		delete(p.usageMeter, key)
-		return
-	}
-	if len(p.usageMeter) > 4096 {
-		p.usageMeter = map[usageKey]int64{}
-	}
-	p.usageMeter[key] = total
-}
-
-type usageKey struct {
-	providerID string
-	requestID  uint64
-}
-
-// observe charges usage for every request issued under the returned context.
-func (p *Pool) observe(ctx context.Context, providerID string) context.Context {
-	return llm.ChainUsageObserver(ctx, func(update llm.UsageUpdate) {
-		p.chargeUsage(providerID, update)
-	})
 }

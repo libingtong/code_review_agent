@@ -29,6 +29,8 @@ type Decision struct {
 	Allowed  bool
 	Reason   string
 	ResumeAt time.Time
+	// Detail explains each channel's individual brake when quota is the cause.
+	Detail string
 }
 
 // Gate combines the working-hours window with provider quota availability.
@@ -95,7 +97,7 @@ func (g *Gate) Check() Decision {
 	if g != nil && g.Quota != nil {
 		budget := g.Quota.EarliestReset()
 		if !budget.EarliestReset.IsZero() && budget.EarliestReset.After(now) {
-			return Decision{Kind: PauseQuota, Reason: budget.Reason, ResumeAt: budget.EarliestReset}
+			return Decision{Kind: PauseQuota, Reason: budget.Reason, ResumeAt: budget.EarliestReset, Detail: budget.Detail}
 		}
 	}
 	return Decision{Kind: Allow, Allowed: true}

@@ -2,8 +2,12 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -404,4 +408,183 @@ func TestFallbackChargeUsesFlashRate(t *testing.T) {
 	if got := chargeFor(glm, 500_000, time.Now()); math.Abs(got-257.5) > 1e-6 {
 		t.Fatalf("flash charge = %v", got)
 	}
+}
+
+// A source quarantined before it ever recorded usage must still roll over.
+// Regression: advanceLocked used to require a non-zero window start, so a single
+// billing error blocked the channel for the whole 5h window and, once persisted,
+// for every later run as well.
+func TestQuarantineExpiresWithoutPriorUsage(t *testing.T) {
+	var failing atomic.Bool
+	failing.Store(true)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if failing.Load() {
+			w.WriteHeader(http.StatusPaymentRequired)
+			_, _ = w.Write([]byte(`{"error":{"code":"402","message":"insufficient balance"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"recovered"}}]}`))
+	}))
+	defer server.Close()
+
+	pool, err := NewPool(testConfig(testProvider("glm", server.URL, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)
+	pool.now = func() time.Time { return now }
+
+	if _, err := pool.Chat(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hi"}}); !errors.Is(err, ErrAllExhausted) {
+		t.Fatalf("want ErrAllExhausted, got %v", err)
+	}
+	failing.Store(false)
+
+	// A billing error without a retry hint must not lock the channel for 5h.
+	now = now.Add(6 * time.Minute)
+	if _, err := pool.Chat(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hi"}}); err != nil {
+		t.Fatalf("source did not recover after a bounded cooldown: %v", err)
+	}
+
+	// And even a full window quarantine must roll over.
+	failing.Store(true)
+	provider := pool.providers[0]
+	provider.quota.markExhausted(now, now.Add(5*time.Hour), "额度耗尽")
+	failing.Store(false)
+	now = now.Add(5*time.Hour + time.Minute)
+	if !provider.quota.Ready(now) {
+		t.Fatal("window did not roll over after its reset instant")
+	}
+}
+
+// A persisted exhausted flag with no reset instant must not survive a restart.
+func TestRestoreClearsStaleExhaustion(t *testing.T) {
+	provider := testProvider("glm", "http://example.invalid", 100)
+	window, err := newQuotaWindow(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	window.restore(quotaState{Provider: "glm", Exhausted: true, Used: 10, Total: 100}, time.Now())
+	if !window.Ready(time.Now()) {
+		t.Fatal("exhaustion without a reset instant must be dropped on restore")
+	}
+}
+
+func TestExhaustionReportNamesEveryChannel(t *testing.T) {
+	entry := testProvider("glm", "http://example.invalid", 100)
+	entry.Quota.Local.Unit = "tokens"
+	entry.Quota.MaxUsageRatio = 0.5
+	pool, err := NewPool(testConfig(entry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	pool.now = func() time.Time { return now }
+	pool.chargeUsage("glm", llm.UsageUpdate{RequestID: 1, TotalTokens: 80, Final: true})
+	report := pool.ExhaustionReport()
+	if !strings.Contains(report, "glm") || !strings.Contains(report, "自设上限") {
+		t.Fatalf("report must explain why the channel is unusable: %q", report)
+	}
+}
+
+// A billing error inside an already-open window must not block the channel until
+// the window resets: only the short cooldown applies.
+func TestBillingErrorDoesNotDrainAnOpenWindow(t *testing.T) {
+	var failing atomic.Bool
+	failing.Store(true)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if failing.Load() {
+			w.WriteHeader(http.StatusPaymentRequired)
+			_, _ = w.Write([]byte(`{"error":{"code":"402","message":"insufficient balance"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+	}))
+	defer server.Close()
+
+	entry := testProvider("glm", server.URL, 100)
+	entry.Quota.Local.Unit = "tokens"
+	pool, err := NewPool(testConfig(entry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 7, 10, 0, 0, 0, time.UTC)
+	pool.now = func() time.Time { return now }
+	pool.chargeUsage("glm", llm.UsageUpdate{RequestID: 99, TotalTokens: 40, Final: true})
+	if status := pool.Statuses()[0]; status.ResetAt.IsZero() || status.Used == 0 {
+		t.Fatalf("window should be open with usage: %+v", status)
+	}
+
+	if _, err := pool.Chat(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hi"}}); err == nil {
+		t.Fatal("402 must surface")
+	}
+	status := pool.Statuses()[0]
+	if status.Exhausted {
+		t.Fatalf("an unconfirmed 402 must not mark the window drained: %+v", status)
+	}
+	if !status.CooldownTill.After(now) {
+		t.Fatal("a cooldown should be applied")
+	}
+
+	failing.Store(false)
+	now = now.Add(quarantineCooldown + time.Minute)
+	if _, err := pool.Chat(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hi"}}); err != nil {
+		t.Fatalf("channel should recover after the cooldown: %v", err)
+	}
+	if status := pool.Statuses()[0]; status.Used < 40 {
+		t.Fatalf("recovered usage should keep the earlier consumption: %+v", status)
+	}
+}
+
+// The pause reason must describe the real brake: a short cooldown is not a
+// drained 5h window.
+func TestPauseReasonMatchesTheActualBrake(t *testing.T) {
+	entry := testProvider("glm", "http://example.invalid", 100)
+	entry.Quota.Local.Unit = "tokens"
+	entry.Quota.MaxUsageRatio = 0.5
+	pool, err := NewPool(testConfig(entry))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	pool.now = func() time.Time { return now }
+
+	// Cooldown only.
+	pool.providers[0].quota.park(now, now.Add(90*time.Second), "429")
+	budget := pool.EarliestReset()
+	if !strings.Contains(budget.Reason, "冷却") || strings.Contains(budget.Reason, "5 小时余量") {
+		t.Fatalf("cooldown reported as a drained window: %q", budget.Reason)
+	}
+	if budget.Detail == "" {
+		t.Fatal("detail must name the channel state")
+	}
+
+	// Self-imposed cap.
+	pool.providers[0].quota = windowForTotal(t, 100, "tokens", 0.5)
+	pool.chargeUsage("glm", llm.UsageUpdate{RequestID: 1, TotalTokens: 80, Final: true})
+	budget = pool.EarliestReset()
+	if !strings.Contains(budget.Reason, "自设用量上限") {
+		t.Fatalf("cap reason missing: %q", budget.Reason)
+	}
+
+	// Vendor-confirmed exhaustion.
+	pool.providers[0].quota = windowForTotal(t, 100, "tokens", 1)
+	pool.chargeUsage("glm", llm.UsageUpdate{RequestID: 2, TotalTokens: 100, Final: true})
+	budget = pool.EarliestReset()
+	if !strings.Contains(budget.Reason, "余量") {
+		t.Fatalf("exhaustion reason missing: %q", budget.Reason)
+	}
+}
+
+func windowForTotal(t *testing.T, total float64, unit string, cap float64) *QuotaWindow {
+	t.Helper()
+	entry := testProvider("glm", "http://example.invalid", total)
+	entry.Quota.Local.Unit = unit
+	entry.Quota.MaxUsageRatio = cap
+	window, err := newQuotaWindow(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return window
 }

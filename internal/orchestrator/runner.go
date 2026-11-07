@@ -280,6 +280,9 @@ func (r *Runner) waitForGate(ctx context.Context) error {
 			} else {
 				r.info("暂停：%s，预计 %s 继续", decision.Reason, decision.ResumeAt.Local().Format("01-02 15:04"))
 			}
+			if decision.Kind == schedule.PauseQuota {
+				r.info("各渠道状态：%s", decision.Detail)
+			}
 		}
 		wait := r.poll
 		if !decision.ResumeAt.IsZero() {
