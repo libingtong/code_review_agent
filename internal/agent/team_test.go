@@ -349,3 +349,49 @@ func TestAgentSpecialToolsInvalidateLastBuffer(t *testing.T) {
 		}
 	}
 }
+
+// When every member of a stage fails, the run must end with a clear error instead
+// of silently idling (observed: a dead run with no log line and no session save).
+func TestAllWorkersFailedSurfacesStageError(t *testing.T) {
+	client := &noticeClient{tools: func(_ context.Context, messages []llm.Message) (llm.ToolResponse, error) {
+		return llm.ToolResponse{}, fmt.Errorf("openai status 400: invalid params, chat content is empty (2013)")
+	}}
+	team := newTestTeam(t, client)
+	defer team.Close()
+	team.cfg.Agent.InfiniteMode = false
+	team.cfg.Agent.MaxTurns = 1
+
+	events := make(chan Event, 256)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	go func() {
+		team.Run(ctx, "audit", func(e Event) {
+			select {
+			case events <- e:
+			default:
+			}
+		})
+	}()
+
+	deadline := time.After(15 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("run neither finished nor reported the stage failure")
+		default:
+		}
+		select {
+		case e := <-events:
+			if e.Kind == "error" && strings.Contains(e.Content, "阶段无法完成") {
+				return
+			}
+		case <-time.After(100 * time.Millisecond):
+			team.mu.Lock()
+			phase := team.phase
+			team.mu.Unlock()
+			if phase == "completed" {
+				t.Fatal("stage reported completed despite total failure")
+			}
+		}
+	}
+}

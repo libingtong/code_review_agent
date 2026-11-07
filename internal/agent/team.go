@@ -629,8 +629,28 @@ func (t *Team) Run(ctx context.Context, input string, emit func(Event)) {
 		}
 		stopActors()
 		t.mu.Lock()
-		if runCtx.Err() != nil || !complete {
+		if runCtx.Err() != nil {
 			t.mu.Unlock()
+			t.emitState()
+			return
+		}
+		if !complete {
+			// Every worker of this stage failed and nothing can complete the barrier.
+			// Staying silent looks like a hang: surface it instead.
+			total, failed := 0, 0
+			for _, w := range t.workers {
+				if w.saved.Status.Phase != stage {
+					continue
+				}
+				total++
+				if w.saved.Status.Status == "failed" {
+					failed++
+				}
+			}
+			t.mu.Unlock()
+			message := fmt.Sprintf("%s 阶段无法完成：%d/%d 个成员失败，运行终止（进度已保存，输入 go 可基于现有状态重试）", stage, failed, total)
+			applog.L().Errorf("%s", message)
+			t.publish(Event{Kind: "error", Content: message})
 			t.emitState()
 			return
 		}
