@@ -26,7 +26,7 @@ https://github.com/huoji120/QWEN-EXO-booster
 | 并发记忆 | 稳定后的并发写盘，**下次启动直接沿用**，不再重复撞 429 | `/concurrency`、`state/concurrency.json` |
 | 工作时间段 | 全局一套窗口，渠道可覆盖（例如 GLM 全天、MiniMax 只在夜里） | `schedule`、`/window` |
 | 任务编排 | 一批目录/任务导入后串行跑完，断点续跑，每任务独立报告 | `/tasks` |
-| 非交互自检 | 不进 TUI 就能看渠道、余量、**端点可用模型名**、时段、队列 | `-check` |
+| 非交互自检 | 不进 TUI 就能看渠道、余量、**端点可用模型名**、**工具调用能力**、时段、队列 | `-check` |
 | 暂停可解释 | 暂停时写清是"时段外 / 冷却中 / 自设上限 / 额度耗尽"，并列出每个渠道的原因 | 事件流、`/providers` |
 
 示例配置：`config.multi.yaml`（双源 + 时段 + 编排）；`config.yaml` 是日常用的双渠道配置。
@@ -43,6 +43,7 @@ https://github.com/huoji120/QWEN-EXO-booster
 | 单次 402 锁死渠道 5 小时 | 无 reset hint 也按整个窗口判死 | 只做 **5 分钟冷却**，探针/下次请求再判断 |
 | 重启后并发又回到 4，重新撞 429 | 学习值只在内存 | 稳定值落盘，启动即用（`concurrency.learn` / `pin`） |
 | 「找不到模型」无法自查 | 模型名写错只能靠猜 | `-check` 直接向端点要 `/models` 并列出可用名 |
+| 「请求已完成但没有原生工具调用」 | chat 协议没发 `tool_choice`，模型改用文字回答 | 强制 `tool_choice: "required"`，端点不支持时自动回退 `auto` 并记住；`-check` 可探测工具能力 |
 | 切换渠道后请求 400 | `previous_response_id` 是厂商私有的 | 跨渠道自动丢弃续接、改发完整历史 |
 | 池内偶发卡死 | 持写锁时又去 `RLock` 时钟 | 持锁路径改用无锁辅助函数 |
 | 64k 上下文的渠道配置报错 | 压缩预留按 1M 上下文写死 | 预留按 `(context-output)/2` 自动推导 |

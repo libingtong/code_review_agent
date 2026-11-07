@@ -340,3 +340,17 @@ func parseModelList(body []byte) ([]string, error) {
 	}
 	return names, nil
 }
+
+// ProbeToolSupport reports whether a channel's model honours native function
+// calling. Text-only models must be caught before an audit loops on "请求已完成
+// 但没有原生工具调用".
+func (p *Pool) ProbeToolSupport(ctx context.Context, id string) (bool, string, error) {
+	provider, err := p.byID(id)
+	if err != nil {
+		return false, "", err
+	}
+	if provider.client == nil {
+		return false, "", fmt.Errorf("渠道 %s 没有客户端", id)
+	}
+	return provider.client.ProbeToolCall(ctx)
+}

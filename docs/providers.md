@@ -129,6 +129,26 @@ concurrency:
 
 这个值属于**厂商/套餐**，与 5H 窗口无关，所以单独存一个文件。
 
+## 原生工具调用与工具能力自检
+
+agent 只走原生 function calling，所以协议层必须"逼"模型调工具，而不是等它自愿：
+
+- **chat 协议**：请求体带 `tool_choice: "required"`（此前没带，模型可能整段文字作答，
+  触发「请求已完成但没有原生工具调用」）；
+- 个别端点不认 `tool_choice: "required"`（返回 4xx 且报错提到 tool_choice）：自动回退成
+  `"auto"` 并**记住该渠道的能力**，后续请求不再重复撞 400；
+- **responses 协议**：本来就带 `tool_choice: "required"`。
+
+`-check` 会真实探测一次：
+
+```
+工具 glm-5.3-flash：原生 function_call OK
+工具 xxx：未返回 function_call ← 该模型在这个端点上可能不支持工具调用；模型回答开头：……
+```
+
+探测用的是内置 `noop` 工具 + 一句"必须用 function_call 调用"。看到后半句就说明该模型/端点
+不支持工具调用，应换模型或换协议；agent 侧在连续两次协议失败后也会给出同样的提示。
+
 ## 自设用量上限
 
 ```yaml

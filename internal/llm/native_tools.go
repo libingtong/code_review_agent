@@ -130,6 +130,18 @@ func nativeChatInput(messages []Message) []any {
 	return input
 }
 
+// toolChoiceRejected detects a 4xx complaining about the tool_choice field.
+func toolChoiceRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	if !strings.Contains(text, "tool_choice") && !strings.Contains(text, "tool choice") {
+		return false
+	}
+	return strings.Contains(text, "openai status 4")
+}
+
 func (c *OpenAIClient) nativeRequest(ctx context.Context, path string, payload any) (*http.Response, context.Context, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -568,6 +580,7 @@ func (c *OpenAIClient) chatCompletionsTools(ctx context.Context, messages []Mess
 		Model             string                 `json:"model"`
 		Messages          []any                  `json:"messages"`
 		Tools             []any                  `json:"tools"`
+		ToolChoice        string                 `json:"tool_choice,omitempty"`
 		ParallelToolCalls bool                   `json:"parallel_tool_calls"`
 		Temperature       float64                `json:"temperature"`
 		TopP              float64                `json:"top_p"`
@@ -576,7 +589,7 @@ func (c *OpenAIClient) chatCompletionsTools(ctx context.Context, messages []Mess
 		StreamOptions     *chatStreamOptions     `json:"stream_options,omitempty"`
 		Thinking          *config.ThinkingConfig `json:"thinking,omitempty"`
 		ReasoningEffort   string                 `json:"reasoning_effort,omitempty"`
-	}{c.cfg.Model, nativeChatInput(messages), nativeTools, false, c.cfg.Temperature, c.cfg.TopP, c.cfg.MaxOutputTokens, c.cfg.Stream, nil, c.cfg.Thinking, c.cfg.ReasoningEffort}
+	}{c.cfg.Model, nativeChatInput(messages), nativeTools, c.chatToolChoice(), false, c.cfg.Temperature, c.cfg.TopP, c.cfg.MaxOutputTokens, c.cfg.Stream, nil, c.cfg.Thinking, c.cfg.ReasoningEffort}
 	if c.cfg.Stream && usageFor(ctx) != nil {
 		payload.StreamOptions = &chatStreamOptions{IncludeUsage: true}
 	}
@@ -587,6 +600,16 @@ func (c *OpenAIClient) chatCompletionsTools(ctx context.Context, messages []Mess
 	defer progress.flushPending()
 	progress.textLimit = nativeTextLimit(c.cfg.MaxOutputTokens)
 	resp, ctx, err := c.nativeRequest(ctx, "/chat/completions", payload)
+	if err != nil && payload.ToolChoice == "required" && toolChoiceRejected(err) {
+		// Endpoint does not understand tool_choice:"required": remember that and
+		// retry once with "auto" instead of failing the whole audit.
+		c.fellBackToolChoice()
+		payload.ToolChoice = "auto"
+		if emit != nil {
+			_ = emit(Delta{Content: ""})
+		}
+		resp, ctx, err = c.nativeRequest(ctx, "/chat/completions", payload)
+	}
 	if err != nil {
 		return ToolResponse{}, err
 	}
@@ -771,4 +794,31 @@ func consumeNativeChat(ctx context.Context, body io.Reader, progress *generation
 		return ToolResponse{}, err
 	}
 	return ToolResponse{}, fmt.Errorf("openai native chat missing [DONE]: %w", io.ErrUnexpectedEOF)
+}
+
+// ProbeToolCall checks whether this model/client pair actually honours native
+// function calling. Some models answer in prose instead, which the agent layer
+// must reject; knowing that up front turns a confusing retry loop into one clear
+// message.
+func (c *OpenAIClient) ProbeToolCall(ctx context.Context) (bool, string, error) {
+	tools := []ToolDefinition{{
+		Type:        "function",
+		Name:        "noop",
+		Description: "占位工具。收到请求后原样回传 ok。",
+		Parameters:  json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+		Strict:      false,
+	}}
+	messages := []Message{{Role: RoleUser, Content: "请通过原生 function_call 调用 noop 工具，arguments 为 {}。不要用文字回答。"}}
+	response, err := c.ChatTools(ctx, messages, tools, func(Delta) error { return nil })
+	if err != nil {
+		return false, "", err
+	}
+	if len(response.Calls) > 0 {
+		return true, "", nil
+	}
+	preview := strings.Join(strings.Fields(response.Content), " ")
+	if len(preview) > 120 {
+		preview = preview[:120] + "…"
+	}
+	return false, preview, nil
 }

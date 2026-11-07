@@ -2,13 +2,17 @@ package llm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+
+	"code-review-agent/internal/config"
 )
 
 func responseCallEvent(kind, args string) string {
@@ -273,5 +277,102 @@ func TestNativeNonstreamGenerationUsesSnapshotAndProviderUsage(t *testing.T) {
 				t.Fatalf("invalid snapshot usage transition: %+v", updates)
 			}
 		})
+	}
+}
+
+// Without tool_choice the model may answer in prose; the agent layer then has to
+// reject the turn. The chat protocol must force a native call.
+func TestChatToolsForcesToolChoice(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"noop","arguments":"{}"}}]}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(config.OpenAIConfig{BaseURL: server.URL, APIKey: "k", Model: "m", APIInterface: "chat",
+		MaxContextTokens: 1000, MaxOutputTokens: 100, TopP: 1, TimeoutSeconds: 5, Stream: false})
+	tools := []ToolDefinition{{Type: "function", Name: "noop", Description: "x", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	if _, err := client.ChatTools(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, tools, func(Delta) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("requests = %d", len(bodies))
+	}
+	if got := bodies[0]["tool_choice"]; got != "required" {
+		t.Fatalf("tool_choice = %v, want required", got)
+	}
+}
+
+// An endpoint that rejects tool_choice:"required" must be retried with "auto"
+// and remembered, instead of failing every turn.
+func TestChatToolsFallsBackWhenToolChoiceRejected(t *testing.T) {
+	var choices []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		choice, _ := body["tool_choice"].(string)
+		choices = append(choices, choice)
+		if choice == "required" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"message":"unsupported parameter tool_choice"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"noop","arguments":"{}"}}]}}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(config.OpenAIConfig{BaseURL: server.URL, APIKey: "k", Model: "m", APIInterface: "chat",
+		MaxContextTokens: 1000, MaxOutputTokens: 100, TopP: 1, TimeoutSeconds: 5, Stream: false})
+	tools := []ToolDefinition{{Type: "function", Name: "noop", Description: "x", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	for i := 0; i < 2; i++ {
+		if _, err := client.ChatTools(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, tools, func(Delta) error { return nil }); err != nil {
+			t.Fatalf("turn %d: %v", i, err)
+		}
+	}
+	if len(choices) == 0 || choices[0] != "required" {
+		t.Fatalf("first attempt should force a call: %v", choices)
+	}
+	if choices[len(choices)-1] != "auto" {
+		t.Fatalf("fallback not remembered: %v", choices)
+	}
+	// 3 requests total: required (400) → auto (ok) → auto (ok)
+	if len(choices) != 3 {
+		t.Fatalf("requests = %v", choices)
+	}
+}
+
+func TestProbeToolCallDetectsTextOnlyModel(t *testing.T) {
+	prose := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"好的，我会调用 noop 工具。"}}]}`))
+	}))
+	defer prose.Close()
+	textOnly := NewOpenAIClient(config.OpenAIConfig{BaseURL: prose.URL, APIKey: "k", Model: "m", APIInterface: "chat",
+		MaxContextTokens: 1000, MaxOutputTokens: 100, TopP: 1, TimeoutSeconds: 5})
+	ok, preview, err := textOnly.ProbeToolCall(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ok {
+		t.Fatal("prose answer must not count as tool support")
+	}
+	if !strings.Contains(preview, "noop") {
+		t.Fatalf("preview should quote the answer: %q", preview)
+	}
+
+	caller := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"noop","arguments":"{}"}}]}}]}`))
+	}))
+	defer caller.Close()
+	withTools := NewOpenAIClient(config.OpenAIConfig{BaseURL: caller.URL, APIKey: "k", Model: "m", APIInterface: "chat",
+		MaxContextTokens: 1000, MaxOutputTokens: 100, TopP: 1, TimeoutSeconds: 5})
+	if ok, _, err := withTools.ProbeToolCall(context.Background()); err != nil || !ok {
+		t.Fatalf("native call not detected: ok=%v err=%v", ok, err)
 	}
 }

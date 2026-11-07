@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -151,6 +152,27 @@ type Delta struct {
 type OpenAIClient struct {
 	cfg        config.OpenAIConfig
 	httpClient *http.Client
+	// toolChoiceAuto is set when the endpoint rejects tool_choice:"required".
+	// The capability is remembered per channel to avoid a 400 on every turn.
+	toolChoiceAuto int32
+}
+
+const (
+	toolChoiceRequired int32 = 0
+	toolChoiceFellBack int32 = 1
+)
+
+// chatToolChoice prefers forcing a native call: without it some models simply
+// answer in prose, which the agent layer must reject.
+func (c *OpenAIClient) chatToolChoice() string {
+	if atomic.LoadInt32(&c.toolChoiceAuto) == toolChoiceFellBack {
+		return "auto"
+	}
+	return "required"
+}
+
+func (c *OpenAIClient) fellBackToolChoice() {
+	atomic.StoreInt32(&c.toolChoiceAuto, toolChoiceFellBack)
 }
 
 func (c *OpenAIClient) ChatStream(ctx context.Context, messages []Message, emit func(Delta) error) (resultErr error) {

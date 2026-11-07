@@ -745,6 +745,9 @@ func (a *Agent) chatStream(ctx context.Context, emit func(Event)) (llm.ToolRespo
 		}
 		a.protocolFailures++
 		feedback := fmt.Sprintf("原生工具协议连续失败（第 %d 次）：%v。你刚才的工具调用无效，必须立即纠正后继续工作。必须调用一个当前 API 声明的原生工具，类型 function_call；arguments 必须是完整 JSON 对象；API 返回非空 call_id。不要输出 XML/DSML，也不要把 JSON 示例写在普通回答中代替调用。具体示例：通过原生 function_call 调用 name=read_handoff，arguments={}（call_id 由原生 API 调用记录提供，不要猜测旧 ID）。每回合只能一个工具；必须实际调用工具后继续。", a.protocolFailures, err)
+		if a.protocolFailures >= 2 {
+			feedback += "（若持续出现：该渠道模型可能不支持原生工具调用，先用 `-check` 的「工具」一行确认，或改用 responses 协议/换模型。）"
+		}
 		a.addMessage(llm.Message{Role: llm.RoleUser, Content: feedback})
 		emit(Event{Kind: "info", Content: feedback})
 	}

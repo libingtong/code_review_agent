@@ -163,6 +163,19 @@ func printModelCheck(ctx context.Context, pool *provider.Pool, status provider.S
 	if !status.Enabled {
 		return
 	}
+	toolOK, preview, toolErr := pool.ProbeToolSupport(ctx, status.ID)
+	switch {
+	case toolErr != nil:
+		fmt.Printf("  工具 %s：探测失败（%v）\n", status.Model, toolErr)
+	case toolOK:
+		fmt.Printf("  工具 %s：原生 function_call OK\n", status.Model)
+	default:
+		hint := ""
+		if preview != "" {
+			hint = "；模型回答开头：" + preview
+		}
+		fmt.Printf("  工具 %s：未返回 function_call ← 该模型在这个端点上可能不支持工具调用%s\n", status.Model, hint)
+	}
 	models, err := pool.ListModels(ctx, status.ID)
 	if err != nil {
 		fmt.Printf("  模型 %s：端点未提供列表（%v）\n", status.Model, err)
