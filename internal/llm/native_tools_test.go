@@ -519,8 +519,8 @@ func TestResponsesFallsBackToTextHistory(t *testing.T) {
 	if strings.Contains(degraded, `"type":"function_call"`) {
 		t.Fatalf("degraded history still has native items: %s", degraded)
 	}
-	if !strings.Contains(degraded, "上一回合调用工具") {
-		t.Fatalf("degraded history should describe the call: %s", degraded)
+	if !strings.Contains(degraded, "工具结果") {
+		t.Fatalf("degraded history should carry the tool result: %s", degraded)
 	}
 
 	// Subsequent turns go straight to the degraded shape.
@@ -614,7 +614,7 @@ func TestTextHistoryModeNeverReplaysNativeItems(t *testing.T) {
 	if strings.Contains(input, `"type":"function_call"`) || strings.Contains(input, `"type":"function_call_output"`) {
 		t.Fatalf("text history mode still replayed native items: %s", input)
 	}
-	if !strings.Contains(input, "上一回合调用工具") {
+	if !strings.Contains(input, "工具结果") {
 		t.Fatalf("degraded text missing: %s", input)
 	}
 }

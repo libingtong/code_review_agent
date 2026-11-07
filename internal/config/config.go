@@ -118,6 +118,7 @@ type AgentConfig struct {
 	AutoPlan                 bool    `yaml:"auto_plan"`
 	MaxToolResultChars       int     `yaml:"max_tool_result_chars"`
 	MaxToolsPerTurn          int     `yaml:"max_tools_per_turn"`
+	MaxProtocolFailures      int     `yaml:"max_protocol_failures"`
 	ReconAgents              int     `yaml:"recon_agents"`
 	AuditAgents              int     `yaml:"audit_agents"`
 	ForumWaitSeconds         int     `yaml:"forum_wait_seconds"`
@@ -208,6 +209,9 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.Agent.ForumWaitSeconds < 1 || cfg.Agent.ForumWaitSeconds > 120 {
 		return Config{}, fmt.Errorf("agent.forum_wait_seconds must be between 1 and 120")
+	}
+	if cfg.Agent.MaxProtocolFailures < 1 || cfg.Agent.MaxProtocolFailures > 20 {
+		return Config{}, fmt.Errorf("agent.max_protocol_failures must be between 1 and 20")
 	}
 	if cfg.Agent.MaxToolsPerTurn < 1 || cfg.Agent.MaxToolsPerTurn > 8 {
 		return Config{}, fmt.Errorf("agent.max_tools_per_turn must be between 1 and 8")
@@ -355,6 +359,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Agent.MaxToolResultChars == 0 {
 		cfg.Agent.MaxToolResultChars = 12000
+	}
+	if cfg.Agent.MaxProtocolFailures == 0 {
+		cfg.Agent.MaxProtocolFailures = 3
 	}
 	if cfg.Agent.MaxToolsPerTurn == 0 {
 		// Conservative default: one tool per turn, exactly the old behaviour.

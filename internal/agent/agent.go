@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"code-review-agent/internal/applog"
 	"code-review-agent/internal/config"
 	"code-review-agent/internal/forum"
 	"code-review-agent/internal/llm"
@@ -759,18 +760,31 @@ func (a *Agent) chatStream(ctx context.Context, emit func(Event)) (llm.ToolRespo
 			a.protocolFailures = 0
 			return response, nil
 		}
-		// Invalid batches are inert diagnostic evidence, never native history.
-		if text := joinAssistantMessage(response.Thinking, response.Content); text != "" {
-			a.addMessage(llm.Message{Role: llm.RoleAssistant, Content: text})
-		}
+		// A text answer that carried no native call is discarded, not replayed: feeding
+		// it back teaches the model to imitate "tool calls written as prose", which is
+		// the failure mode that made the moderator loop for hundreds of turns.
+		applog.L().Warnf("%s 回合未返回原生工具调用（第 %d 次）：%s",
+			a.id, a.protocolFailures+1, briefText(joinAssistantMessage(response.Thinking, response.Content), 200))
 		a.protocolFailures++
-		feedback := fmt.Sprintf("原生工具协议连续失败（第 %d 次）：%v。你刚才的工具调用无效，必须立即纠正后继续工作。必须调用一个当前 API 声明的原生工具，类型 function_call；arguments 必须是完整 JSON 对象；API 返回非空 call_id。不要输出 XML/DSML，也不要把 JSON 示例写在普通回答中代替调用。具体示例：通过原生 function_call 调用 name=read_handoff，arguments={}（call_id 由原生 API 调用记录提供，不要猜测旧 ID）。本回合必须实际调用工具后继续；不要用文字回答代替工具调用。", a.protocolFailures, err)
-		if a.protocolFailures >= 2 {
-			feedback += "（若持续出现：该渠道模型可能不支持原生工具调用，先用 `-check` 的「工具」一行确认，或改用 responses 协议/换模型。）"
+		if limit := a.cfg.Agent.MaxProtocolFailures; limit > 0 && a.protocolFailures >= limit {
+			return llm.ToolResponse{}, fmt.Errorf("连续 %d 次没有返回原生工具调用，已停止该成员（该渠道模型可能不支持工具调用，或上下文已严重漂移）", a.protocolFailures)
+		}
+		feedback := fmt.Sprintf("本回合没有收到原生工具调用（第 %d 次），你的文字回答未被执行。请立即通过原生 function call 调用一个当前可用工具继续工作，例如 review_state、read_file、forum_roster；不要用文字或代码块描述调用。", a.protocolFailures)
+		if len(a.messages) > 0 && a.messages[len(a.messages)-1].Role == llm.RoleUser && a.messages[len(a.messages)-1].Content == feedback {
+			continue
 		}
 		a.addMessage(llm.Message{Role: llm.RoleUser, Content: feedback})
 		emit(Event{Kind: "info", Content: feedback})
 	}
+}
+
+// briefText trims free-form model text for a single log line.
+func briefText(text string, limit int) string {
+	text = strings.Join(strings.Fields(text), " ")
+	if len(text) <= limit {
+		return text
+	}
+	return text[:limit] + "…"
 }
 
 func describeVerificationToolCall(call ToolCall) string {

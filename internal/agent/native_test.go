@@ -22,7 +22,7 @@ func TestNativeLoopRetriesProtocolFailuresUntilValidCall(t *testing.T) {
 			}
 			found := false
 			for _, message := range messages {
-				if message.Role == llm.RoleUser && strings.Contains(message.Content, "立即纠正") && strings.Contains(message.Content, "第 ") {
+				if message.Role == llm.RoleUser && strings.Contains(message.Content, "没有收到原生工具调用") && strings.Contains(message.Content, "第 ") {
 					found = true
 				}
 			}
@@ -381,5 +381,27 @@ func TestRecordResponseKeepsEveryCall(t *testing.T) {
 	}
 	if calls != 2 || assistant != 1 {
 		t.Fatalf("history shape wrong: calls=%d assistant=%d", calls, assistant)
+	}
+}
+
+// A model that keeps answering in prose must not loop forever: the member is
+// stopped after max_protocol_failures and the prose is never replayed.
+func TestProtocolFailureCapStopsMember(t *testing.T) {
+	client := &noticeClient{tools: func(_ context.Context, messages []llm.Message) (llm.ToolResponse, error) {
+		for _, message := range messages {
+			if strings.Contains(message.Content, "WRITTEN_AS_PROSE") {
+				t.Fatalf("failed prose answer must not be replayed into history")
+			}
+		}
+		return llm.ToolResponse{Content: "WRITTEN_AS_PROSE 我要调用 forum_post"}, nil
+	}}
+	team := newTestTeam(t, client)
+	defer team.Close()
+	team.cfg.Agent.MaxProtocolFailures = 2
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-4", phaseAudit, team.board)
+	defer a.tools.Close()
+	_, err := a.chatStream(context.Background(), func(Event) {})
+	if err == nil || !strings.Contains(err.Error(), "连续 2 次没有返回原生工具调用") {
+		t.Fatalf("loop must stop with a clear error, got %v", err)
 	}
 }

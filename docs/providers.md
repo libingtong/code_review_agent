@@ -151,7 +151,7 @@ concurrency:
 | 现象 | 原因 | 处理 |
 | --- | --- | --- |
 | `模型返回 2/3 个原生工具调用；每回合只允许一个，整批未执行` | 厂商一次返回并行调用（`parallel_tool_calls:false` 不一定被遵守） | 不再整批丢弃：**执行第一个**，其余补一条"本回合跳过"的 `function_call_output`，保证每个 call_id 都有对应结果 |
-| `invalid_request messages 参数非法` / `response.failed` | 端点接受 tools 出去，但拒绝我们把 `function_call` / `function_call_output` 原样回放 | 该请求失败一次后，把历史降级成纯文本（`[上一回合调用工具 X，参数 …]` / `[工具结果] …`）并**记住该渠道**，后续回合都用文本历史 |
+| `invalid_request messages 参数非法` / `response.failed` | 端点接受 tools 出去，但拒绝我们把 `function_call` / `function_call_output` 原样回放 | 该请求失败一次后，把工具结果降级成纯文本（`[工具结果 工具名] …`；不再回放 "调用工具 X，参数 …" 这类助手文本，否则模型会学着把工具调用写成散文）并**记住该渠道**，后续回合都用文本历史 |
 
 降级只影响"怎么把历史讲给模型听"，工具本身仍走原生调用；`-check` 的「工具」行仍会显示原生工具是否可用。
 
@@ -163,7 +163,7 @@ Responses 协议要求把上一轮的 `function_call` / `function_call_output` �
 | --- | --- | --- |
 | `auto`（默认） | 先发原生历史；被拒时**同回合**降级重发一次，并把该渠道切成文本历史 | MiniMax（接受续接与原生回放） |
 | `native` | 永远发原生历史，不降级 | 确定兼容的端点 |
-| `text` | **从第一个请求起**就把工具历史转成纯文本（`[上一回合调用工具 X，参数 …]` / `[工具结果] …`） | GLM（实测反复拒绝原生回放） |
+| `text` | **从第一个请求起**就只把工具结果转成纯文本（`[工具结果 工具名] …`），不回放调用项 | GLM（实测反复拒绝原生回放） |
 
 文本历史只影响"模型怎么读到历史"，工具调用本身仍是原生 `function_call`；`-check` 的「工具」行照样是 `原生 function_call OK`。当前 `config.yaml` 里 GLM 已设为 `history: text`。
 

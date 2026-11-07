@@ -222,18 +222,31 @@ func hasNativeToolItems(messages []Message) bool {
 	return false
 }
 
-// degradedResponsesInput replays tool traffic as plain text, for endpoints that
+// degradedResponsesInput replays tool results as plain text, for endpoints that
 // accept tools on the way out but refuse the replayed items on the way back.
+//
+// Call items are deliberately omitted: showing "调用工具 X，参数 …" as assistant
+// text teaches models to write tool calls as prose, which is exactly the failure
+// mode this replay shape exists to avoid.
 func degradedResponsesInput(messages []Message) []any {
+	names := make(map[string]string, len(messages))
+	for _, msg := range messages {
+		if msg.Type == "function_call" && msg.CallID != "" {
+			names[msg.CallID] = msg.Name
+		}
+	}
 	input := make([]any, 0, len(messages))
 	for _, msg := range messages {
 		switch msg.Type {
 		case "function_call":
-			input = append(input, responsesInputItem{Role: string(RoleAssistant),
-				Content: fmt.Sprintf("[上一回合调用工具 %s，参数 %s]", msg.Name, msg.Arguments)})
+			continue
 		case "function_call_output":
+			name := names[msg.CallID]
+			if name == "" {
+				name = msg.CallID
+			}
 			input = append(input, responsesInputItem{Role: string(RoleUser),
-				Content: fmt.Sprintf("[工具 %s 的结果] %s", msg.CallID, msg.Content)})
+				Content: fmt.Sprintf("[工具结果 %s] %s", name, msg.Content)})
 		default:
 			role := msg.Role
 			if role == RoleTool {
