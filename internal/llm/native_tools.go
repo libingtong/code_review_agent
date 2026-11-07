@@ -80,6 +80,14 @@ func validateToolHistory(messages []Message) error {
 	return nil
 }
 
+// responsesHistoryInput picks the history shape this channel accepts.
+func (c *OpenAIClient) responsesHistoryInput(messages []Message) []any {
+	if !c.textHistoryEnabled() {
+		return degradedResponsesInput(messages)
+	}
+	return nativeResponsesInput(messages)
+}
+
 func nativeResponsesInput(messages []Message) []any {
 	input := make([]any, 0, len(messages))
 	for _, msg := range messages {
@@ -258,7 +266,7 @@ func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, t
 		Thinking           *config.ThinkingConfig `json:"thinking,omitempty"`
 		Reasoning          *reasoningOptions      `json:"reasoning,omitempty"`
 	}{
-		Model: c.cfg.Model, Input: nativeResponsesInput(requestMessages), PreviousResponseID: previousResponseID,
+		Model: c.cfg.Model, Input: c.responsesHistoryInput(requestMessages), PreviousResponseID: previousResponseID,
 		Tools: tools, ToolChoice: "required", ParallelToolCalls: false, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP,
 		MaxOutputTokens: c.cfg.MaxOutputTokens, Stream: c.cfg.Stream, Thinking: c.cfg.Thinking, Reasoning: c.responseReasoning(),
 	}
@@ -269,6 +277,12 @@ func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, t
 	defer progress.flushPending()
 	progress.textLimit = nativeTextLimit(c.cfg.MaxOutputTokens)
 	resp, ctx, err := c.nativeRequest(ctx, "/responses", payload)
+	if err != nil && badHistoryError(err) && c.textHistoryEnabled() && hasNativeToolItems(requestMessages) {
+		// One failed turn, then the channel switches to text history for good.
+		c.useTextHistory()
+		payload.Input = degradedResponsesInput(requestMessages)
+		resp, ctx, err = c.nativeRequest(ctx, "/responses", payload)
+	}
 	if err != nil && retryWithoutContinuation(c, err) {
 		// The endpoint hands out response ids but refuses previous_response_id
 		// (GLM's Responses API does this). Resend the full history once and stop
@@ -281,7 +295,13 @@ func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, t
 	}
 	defer resp.Body.Close()
 	if c.cfg.Stream {
-		return consumeNativeResponses(ctx, resp.Body, progress)
+		response, streamErr := consumeNativeResponses(ctx, resp.Body, progress)
+		if streamErr != nil && badHistoryError(streamErr) && c.textHistoryEnabled() && hasNativeToolItems(requestMessages) {
+			// Mid-stream failure cannot be retried without duplicating output, but
+			// the next turn must not repeat it: switch this channel to text history.
+			c.useTextHistory()
+		}
+		return response, streamErr
 	}
 	body, err := readNativeBody(resp.Body, progress.textLimit)
 	accountUnreadableBody(ctx, body, err)

@@ -451,3 +451,62 @@ func TestResponsesContinuationIsKeptWhenSupported(t *testing.T) {
 		t.Fatalf("supported continuation must be sent: %v", previous)
 	}
 }
+
+// Some Responses endpoints accept tools but reject the replayed function_call
+// items with "invalid_request ... messages". The client must retry once with a
+// text-degraded history and remember the mode for later turns.
+func TestResponsesFallsBackToTextHistory(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		if strings.Contains(mustJSON(body["input"]), `"type":"function_call"`) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"invalid_request","message":"messages 参数非法。请检查文档。"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_ok","status":"completed","output":[{"type":"function_call","call_id":"c2","name":"noop","arguments":"{}"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(config.OpenAIConfig{BaseURL: server.URL, APIKey: "k", Model: "m", APIInterface: "responses",
+		MaxContextTokens: 1000, MaxOutputTokens: 100, TopP: 1, TimeoutSeconds: 5, Stream: false})
+	tools := []ToolDefinition{{Type: "function", Name: "noop", Description: "x", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	history := []Message{
+		{Role: RoleUser, Content: "调用 noop"},
+		{Type: "function_call", CallID: "c1", Name: "noop", Arguments: "{}"},
+		{Type: "function_call_output", CallID: "c1", Content: `{"ok":true}`},
+		{Role: RoleUser, Content: "继续"},
+	}
+	if _, err := client.ChatTools(context.Background(), history, tools, func(Delta) error { return nil }); err != nil {
+		t.Fatalf("fallback must recover: %v", err)
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("requests = %d, want 2 (native then degraded)", len(bodies))
+	}
+	if !strings.Contains(mustJSON(bodies[0]["input"]), `"function_call"`) {
+		t.Fatalf("first attempt should use native items")
+	}
+	degraded := mustJSON(bodies[1]["input"])
+	if strings.Contains(degraded, `"type":"function_call"`) {
+		t.Fatalf("degraded history still has native items: %s", degraded)
+	}
+	if !strings.Contains(degraded, "上一回合调用工具") {
+		t.Fatalf("degraded history should describe the call: %s", degraded)
+	}
+
+	// Subsequent turns go straight to the degraded shape.
+	if _, err := client.ChatTools(context.Background(), history, tools, func(Delta) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 3 || strings.Contains(mustJSON(bodies[2]["input"]), `"type":"function_call"`) {
+		t.Fatalf("text history not remembered: %v", mustJSON(bodies[2]["input"]))
+	}
+}
+
+func mustJSON(value any) string {
+	data, _ := json.Marshal(value)
+	return string(data)
+}

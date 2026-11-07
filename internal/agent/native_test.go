@@ -220,3 +220,48 @@ func TestNativeResultsTraceRestoreAndCompressionPreserveEvidence(t *testing.T) {
 		}
 	}
 }
+
+// Providers may return several parallel calls in one turn. The batch is no
+// longer fatal: the first executes, the rest get an explicit skip output so the
+// history keeps a call/output pair for every call_id.
+func TestMultipleNativeCallsAreAcceptedWithSkips(t *testing.T) {
+	response := llm.ToolResponse{Calls: []llm.FunctionCall{
+		{CallID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`},
+		{CallID: "c2", Name: "search_content", Arguments: `{"query":"admin"}`},
+		{CallID: "c3", Name: "forum_roster", Arguments: `{}`},
+	}}
+	if err := validateNativeResponse(response, nil); err != nil {
+		t.Fatalf("multi-call batch must be accepted: %v", err)
+	}
+
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-9", phaseAudit, team.board)
+	defer a.tools.Close()
+	// The first call is executed by the turn loop; the remaining two are stubbed.
+	a.recordSkippedCalls(response.Calls[1:], "本回合只执行一个工具")
+
+	callItems, outputItems := 0, 0
+	for _, message := range a.messages {
+		switch message.Type {
+		case "function_call":
+			callItems++
+		case "function_call_output":
+			outputItems++
+		}
+	}
+	if callItems != 2 || outputItems != 2 {
+		t.Fatalf("stub history incomplete: calls=%d outputs=%d", callItems, outputItems)
+	}
+}
+
+// A malformed call inside a multi-call batch still fails the turn.
+func TestInvalidCallInsideBatchIsRejected(t *testing.T) {
+	response := llm.ToolResponse{Calls: []llm.FunctionCall{
+		{CallID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`},
+		{CallID: "", Name: "search_content", Arguments: `{}`},
+	}}
+	if err := validateNativeResponse(response, nil); err == nil {
+		t.Fatal("missing call_id must be rejected")
+	}
+}

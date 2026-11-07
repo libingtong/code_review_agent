@@ -95,15 +95,20 @@ func specialToolDefinitions() []llm.ToolDefinition {
 	}
 }
 
+// validateNativeResponse checks every call individually. Providers may return
+// several parallel calls in one turn; the batch is no longer rejected wholesale
+// (that turned a vendor behaviour into a wasted turn), only malformed calls are.
 func validateNativeResponse(response llm.ToolResponse, history []llm.Message) error {
-	if len(response.Calls) > 1 {
-		return fmt.Errorf("模型返回 %d 个原生工具调用；每回合只允许一个，整批未执行", len(response.Calls))
-	}
+	seen := map[string]bool{}
 	for _, call := range response.Calls {
 		arguments := strings.TrimSpace(call.Arguments)
 		if strings.TrimSpace(call.CallID) == "" || strings.TrimSpace(call.Name) == "" || !json.Valid([]byte(arguments)) || !strings.HasPrefix(arguments, "{") {
 			return fmt.Errorf("原生工具调用缺少 call_id/name 或完整 JSON 对象参数；未执行")
 		}
+		if seen[call.CallID] {
+			return fmt.Errorf("同一批返回了重复 call_id %q；未执行", call.CallID)
+		}
+		seen[call.CallID] = true
 		for _, message := range history {
 			if message.Type == "function_call" && message.CallID == call.CallID {
 				return fmt.Errorf("原生工具调用重复 call_id %q；未执行", call.CallID)
@@ -111,6 +116,16 @@ func validateNativeResponse(response llm.ToolResponse, history []llm.Message) er
 		}
 	}
 	return nil
+}
+
+// recordSkippedCalls keeps history valid when the provider returns several
+// parallel calls: the first is executed, the rest get an explicit "not executed"
+// output so the next turn sees a complete call/output pair for every call_id.
+func (a *Agent) recordSkippedCalls(calls []llm.FunctionCall, reason string) {
+	for _, call := range calls {
+		a.addMessage(llm.Message{Type: "function_call", ID: call.ID, CallID: call.CallID, Name: call.Name, Arguments: call.Arguments})
+		a.rejectTool(call, reason)
+	}
 }
 
 func (a *Agent) recordResponse(response llm.ToolResponse) (llm.FunctionCall, bool) {

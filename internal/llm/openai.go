@@ -155,6 +155,9 @@ type OpenAIClient struct {
 	// toolChoiceAuto is set when the endpoint rejects tool_choice:"required".
 	// The capability is remembered per channel to avoid a 400 on every turn.
 	toolChoiceAuto int32
+	// textHistory is set when the endpoint rejects replaying native
+	// function_call/function_call_output items; history is then degraded to text.
+	textHistory int32
 	// continuationUnsupported is set when the endpoint returns a response id but
 	// then refuses previous_response_id (GLM's Responses endpoint does this).
 	// Remembering it keeps every later turn from failing.
@@ -177,6 +180,69 @@ func (c *OpenAIClient) chatToolChoice() string {
 
 func (c *OpenAIClient) fellBackToolChoice() {
 	atomic.StoreInt32(&c.toolChoiceAuto, toolChoiceFellBack)
+}
+
+// textHistoryEnabled reports whether native tool items may be replayed.
+func (c *OpenAIClient) textHistoryEnabled() bool {
+	return atomic.LoadInt32(&c.textHistory) == 0
+}
+
+func (c *OpenAIClient) useTextHistory() {
+	atomic.StoreInt32(&c.textHistory, 1)
+}
+
+// badHistoryError detects "invalid_request … messages/参数非法" style rejections,
+// which is how some Responses endpoints refuse replayed function_call items.
+func badHistoryError(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	markers := []string{"invalid_request", "参数非法", "invalid messages", "invalid input", "invalid_request_error"}
+	matched := false
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return false
+	}
+	return strings.Contains(text, "response.failed") || strings.Contains(text, "openai status 400") ||
+		strings.Contains(text, "openai status 422") || strings.Contains(text, "messages")
+}
+
+func hasNativeToolItems(messages []Message) bool {
+	for _, message := range messages {
+		if message.Type == "function_call" || message.Type == "function_call_output" {
+			return true
+		}
+	}
+	return false
+}
+
+// degradedResponsesInput replays tool traffic as plain text, for endpoints that
+// accept tools on the way out but refuse the replayed items on the way back.
+func degradedResponsesInput(messages []Message) []any {
+	input := make([]any, 0, len(messages))
+	for _, msg := range messages {
+		switch msg.Type {
+		case "function_call":
+			input = append(input, responsesInputItem{Role: string(RoleAssistant),
+				Content: fmt.Sprintf("[上一回合调用工具 %s，参数 %s]", msg.Name, msg.Arguments)})
+		case "function_call_output":
+			input = append(input, responsesInputItem{Role: string(RoleUser),
+				Content: fmt.Sprintf("[工具 %s 的结果] %s", msg.CallID, msg.Content)})
+		default:
+			role := msg.Role
+			if role == RoleTool {
+				role = RoleUser
+			}
+			input = append(input, responsesInputItem{Role: string(role), Content: msg.Content})
+		}
+	}
+	return input
 }
 
 // continuationEnabled reports whether previous_response_id may be sent.
@@ -576,7 +642,7 @@ func (c *OpenAIClient) responsesStream(ctx context.Context, messages []Message, 
 		previousResponseID = ""
 	}
 	build := func(previous string) (*http.Response, context.Context, error) {
-		reqBody := responsesRequest{Model: c.cfg.Model, Input: responsesInput(requestMessages), PreviousResponseID: previous, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP, MaxOutputTokens: c.cfg.MaxOutputTokens, Stream: true}
+		reqBody := responsesRequest{Model: c.cfg.Model, Input: c.responsesHistoryInput(requestMessages), PreviousResponseID: previous, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP, MaxOutputTokens: c.cfg.MaxOutputTokens, Stream: true}
 		reqBody.Thinking, reqBody.Reasoning = c.cfg.Thinking, c.responseReasoning()
 		data, err := json.Marshal(reqBody)
 		if err != nil {
@@ -592,6 +658,10 @@ func (c *OpenAIClient) responsesStream(ctx context.Context, messages []Message, 
 		return c.doStream(req)
 	}
 	resp, ctx, err := build(previousResponseID)
+	if err != nil && badHistoryError(err) && c.textHistoryEnabled() && hasNativeToolItems(requestMessages) {
+		c.useTextHistory()
+		resp, ctx, err = build(previousResponseID)
+	}
 	if err != nil && retryWithoutContinuation(c, err) {
 		resp, ctx, err = build("")
 	}
@@ -705,7 +775,7 @@ func (c *OpenAIClient) responsesChat(ctx context.Context, messages []Message) (s
 		previousResponseID = ""
 	}
 	build := func(previous string) (*http.Response, error) {
-		reqBody := responsesRequest{Model: c.cfg.Model, Input: responsesInput(requestMessages), PreviousResponseID: previous, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP, MaxOutputTokens: c.cfg.MaxOutputTokens}
+		reqBody := responsesRequest{Model: c.cfg.Model, Input: c.responsesHistoryInput(requestMessages), PreviousResponseID: previous, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP, MaxOutputTokens: c.cfg.MaxOutputTokens}
 		reqBody.Thinking, reqBody.Reasoning = c.cfg.Thinking, c.responseReasoning()
 		data, err := json.Marshal(reqBody)
 		if err != nil {
@@ -722,6 +792,18 @@ func (c *OpenAIClient) responsesChat(ctx context.Context, messages []Message) (s
 	resp, err := build(previousResponseID)
 	if err != nil {
 		return "", err
+	}
+	if resp.StatusCode == http.StatusBadRequest && c.textHistoryEnabled() && hasNativeToolItems(requestMessages) {
+		bodyErr := readErrorBody(resp)
+		if badHistoryError(bodyErr) {
+			c.useTextHistory()
+			resp, err = build("")
+			if err != nil {
+				return "", err
+			}
+		} else {
+			return "", bodyErr
+		}
 	}
 	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest {
 		// Read the body to decide whether this is a continuation complaint.
@@ -862,7 +944,7 @@ type streamResponse struct {
 
 type responsesRequest struct {
 	Model              string                 `json:"model"`
-	Input              []responsesInputItem   `json:"input"`
+	Input              []any                  `json:"input"`
 	PreviousResponseID string                 `json:"previous_response_id,omitempty"`
 	Temperature        float64                `json:"temperature,omitempty"`
 	TopP               float64                `json:"top_p,omitempty"`

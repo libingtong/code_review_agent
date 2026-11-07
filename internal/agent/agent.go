@@ -332,6 +332,12 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 		a.commitResponseContinuation(answer)
 		emit(Event{Kind: "assistant_done"})
 		fullResult := a.executeNativeTool(activityCtx, emit, call)
+		if len(answer.Calls) > 1 {
+			// One tool per turn stays the rule; the extra calls are acknowledged so
+			// the provider sees a complete call/output pair for each call_id.
+			a.recordSkippedCalls(answer.Calls[1:], "本回合只执行一个工具；该调用被跳过，如需执行请在下一回合单独发起")
+			emit(Event{Kind: "info", Content: fmt.Sprintf("模型一次返回 %d 个工具调用，只执行了当前回合的一个，其余已标记跳过", len(answer.Calls))})
+		}
 		finish()
 		if a.runErr != nil {
 			emit(Event{Kind: "error", Content: a.runErr.Error()})
