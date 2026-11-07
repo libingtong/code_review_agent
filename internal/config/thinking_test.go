@@ -7,8 +7,11 @@ func TestThinkingConfigurationRejectsDisableAndKeepsIndependentEffort(t *testing
 		if _, err := loadBudgetConfig(t, section+":\n  thinking:\n    type: disabled\n"); err == nil {
 			t.Fatal("disabled THINK accepted")
 		}
-		if _, err := loadBudgetConfig(t, section+":\n  reasoning_effort: medium\n"); err == nil {
+		if _, err := loadBudgetConfig(t, section+":\n  reasoning_effort: turbo\n"); err == nil {
 			t.Fatal("unsupported effort accepted")
+		}
+		if _, err := loadBudgetConfig(t, section+":\n  reasoning_effort: medium\n"); err != nil {
+			t.Fatal("medium must be accepted: " + err.Error())
 		}
 	}
 	cfg, err := loadBudgetConfig(t, "openai:\n  thinking:\n    type: adaptive\n  reasoning_effort: max\ncompress_openai:\n  reasoning_effort: low\n")
