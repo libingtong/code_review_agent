@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"code-review-agent/internal/applog"
 	"code-review-agent/internal/forum"
 	"code-review-agent/internal/llm"
 	"code-review-agent/internal/tools"
@@ -112,6 +113,18 @@ func (t *Team) startModerator(ctx context.Context) func() {
 		}
 		// External bursts are coalesced. A bounded debounce prevents a fast idle/post
 		// exchange from turning into a hot model loop; urgent barrier reviews bypass it.
+		//
+		// A periodic tick is also skipped when nothing changed: waking the moderator
+		// every minute to conclude "nothing to do" burns a full model turn each time
+		// (and every such turn is a chance to drift out of the native tool protocol).
+		idleHeartbeat := time.Duration(t.cfg.Agent.ModeratorIdleMinutes) * time.Minute
+		if idleHeartbeat <= 0 {
+			idleHeartbeat = 10 * time.Minute
+		}
+		var lastReviewID int64
+		var lastReviewCount int
+		var lastReviewPhase string
+		var lastReviewAt time.Time
 		first := true
 		for {
 			var review moderatorReview
@@ -123,6 +136,15 @@ func (t *Team) startModerator(ctx context.Context) func() {
 				case review = <-reviews:
 					reason = "阶段结束审查"
 				case <-ticks:
+					lastID, count := t.board.Revision()
+					t.mu.Lock()
+					phase := t.phase
+					t.mu.Unlock()
+					if lastID == lastReviewID && count == lastReviewCount && phase == lastReviewPhase &&
+						time.Since(lastReviewAt) < idleHeartbeat {
+						applog.L().Debugf("moderator：论坛与阶段无变化，跳过定时审查（下次心跳 %s 内）", idleHeartbeat)
+						continue
+					}
 				case <-wake:
 					timer := time.NewTimer(250 * time.Millisecond)
 					select {
@@ -145,6 +167,11 @@ func (t *Team) startModerator(ctx context.Context) func() {
 			if child.Err() != nil {
 				return
 			}
+			lastReviewID, lastReviewCount = t.board.Revision()
+			t.mu.Lock()
+			lastReviewPhase = t.phase
+			t.mu.Unlock()
+			lastReviewAt = time.Now()
 			var approved bool
 			if review.result != nil {
 				approved = t.moderatorActivation(child, w, reason, review.stage)

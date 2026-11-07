@@ -216,6 +216,17 @@ func (b *Board) post(agentID, stage, to string, replyTo int64, topic, content st
 	}
 	return m, nil
 }
+// Revision is a cheap change marker for "did anything happen since I last
+// looked": the newest message id plus the retained count.
+func (b *Board) Revision() (lastID int64, count int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n := len(b.msgs); n > 0 {
+		return b.msgs[n-1].ID, n
+	}
+	return 0, 0
+}
+
 func (b *Board) Messages() []Message {
 	b.mu.Lock()
 	defer b.mu.Unlock()

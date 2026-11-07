@@ -201,3 +201,28 @@ func TestForumNumberedPagesFollowActivityTime(t *testing.T) {
 		}
 	}
 }
+
+// Revision must change exactly when the board changes; the moderator tick uses
+// it to skip idle wake-ups.
+func TestRevisionTracksBoardChanges(t *testing.T) {
+	board := New(time.Second)
+	if id, count := board.Revision(); id != 0 || count != 0 {
+		t.Fatalf("empty revision = %d/%d", id, count)
+	}
+	board.Register("recon-1", "recon")
+	board.Register("recon-2", "recon")
+	first, err := board.Post("recon-1", "recon", "*", 0, "入口", "发现入口")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, count := board.Revision()
+	if id != first.ID || count != 1 {
+		t.Fatalf("revision = %d/%d, want %d/1", id, count, first.ID)
+	}
+	if _, err := board.Post("recon-2", "recon", "*", 0, "复核", "已复核"); err != nil {
+		t.Fatal(err)
+	}
+	if id2, count2 := board.Revision(); id2 == id || count2 != 2 {
+		t.Fatalf("revision did not advance: %d/%d", id2, count2)
+	}
+}
