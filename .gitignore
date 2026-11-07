@@ -21,6 +21,8 @@ report.json
 x.json
 /*审计报告*.md
 /*审计证据索引*
+# 复用提示词是模板资产，不是生成物，必须能入库
+!/*可复用提示词*.md
 /deliverables/
 /reports/
 
