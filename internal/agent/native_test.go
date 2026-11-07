@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"code-review-agent/internal/llm"
 )
@@ -560,5 +561,36 @@ func TestSanitizeDropsOrphanToolOutputs(t *testing.T) {
 	}
 	if outputs != 1 {
 		t.Fatalf("outputs = %d", outputs)
+	}
+}
+
+// Recon must be bounded: after the limit a worker is told to submit, then stopped.
+func TestReconTurnLimitStopsRunawayWorker(t *testing.T) {
+	client := &noticeClient{tools: func(_ context.Context, messages []llm.Message) (llm.ToolResponse, error) {
+		return toolReply("review_state", map[string]any{}), nil
+	}}
+	team := newTestTeam(t, client)
+	defer team.Close()
+	team.cfg.Agent.MaxTurnsPerStage = 2
+	team.cfg.Agent.MaxTurns = 0
+	team.cfg.Agent.InfiniteMode = true
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "recon-1", phaseRecon, team.board)
+	defer a.tools.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	a.Run(ctx, "侦察这个仓库", func(Event) {})
+
+	if a.runErr == nil || !strings.Contains(a.runErr.Error(), "侦察回合超时") {
+		t.Fatalf("run should stop with a turn-limit error, got %v", a.runErr)
+	}
+	nudges := 0
+	for _, message := range a.messages {
+		if strings.Contains(message.Content, "侦察预算已用") {
+			nudges++
+		}
+	}
+	if nudges != 1 {
+		t.Fatalf("submit reminder should appear once, got %d", nudges)
 	}
 }

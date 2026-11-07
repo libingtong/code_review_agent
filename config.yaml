@@ -150,6 +150,8 @@ agent:
   budget_minutes: 0
   budget_tokens: 0
   max_turns: 0
+  # 侦察阶段回合上限（无限模式下也生效）：超限先提醒"立即 audit_plan_done"，再 5 回合未提交就停掉该成员
+  max_turns_per_stage: 80
   session_dir: sessions
   log_session: false
   log_session_dir: log_sessions

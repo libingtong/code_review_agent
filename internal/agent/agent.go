@@ -53,6 +53,8 @@ type Agent struct {
 	protocolFailures       int
 	// forumNudged records the one-time reminder that the agent never posted.
 	forumNudged bool
+	// stageTurnNudged records the one-time "submit now" reminder.
+	stageTurnNudged bool
 	// reducedReasoning sticks after a truncated generation: the same request
 	// would otherwise truncate again on every retry.
 	reducedReasoning bool
@@ -68,6 +70,10 @@ type Agent struct {
 	ircPending       func() []IRCMessage
 	waitRetry        func(context.Context, time.Duration) error
 }
+
+// stageTurnGrace is how many turns a recon worker gets after the "submit now"
+// reminder before it is stopped.
+const stageTurnGrace = 5
 
 const (
 	phaseRecon     = "recon"
@@ -329,6 +335,22 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 		if ctx.Err() != nil {
 			a.runErr = ctx.Err()
 			return
+		}
+		// Recon is bounded even in infinite mode: reading files forever without
+		// submitting the map burns whole subscription windows (observed: 300+ turns,
+		// 17M tokens, zero output).
+		if a.phase == phaseRecon {
+			if limit := a.cfg.Agent.MaxTurnsPerStage; limit > 0 {
+				if turn > limit+stageTurnGrace {
+					a.runErr = fmt.Errorf("侦察回合超时：%d 回合仍未调用 audit_plan_done，已停止该成员", turn)
+					emit(Event{Kind: "error", Content: a.runErr.Error()})
+					return
+				}
+				if turn > limit && !a.stageTurnNudged {
+					a.stageTurnNudged = true
+					a.addMessage(llm.Message{Role: llm.RoleUser, Content: fmt.Sprintf("侦察预算已用 %d 回合（上限 %d）。请立即整理现有证据，调用 audit_plan_done 提交审计地图与文件清单，不要再继续扩展探索。", turn, limit)})
+				}
+			}
 		}
 		if !a.cfg.Agent.InfiniteMode && a.cfg.Agent.MaxTurns > 0 && turn > a.cfg.Agent.MaxTurns {
 			a.runErr = fmt.Errorf("达到当前 worker 的 max_turns，阶段未完成；可用 go 继续")
