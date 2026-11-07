@@ -150,12 +150,17 @@ func Load(path string) (Config, error) {
 		}
 	}
 	applyDefaults(&cfg)
-	if err := validateReasoning(cfg.OpenAI, "openai"); err != nil {
-		return Config{}, err
+	if len(cfg.Providers) == 0 {
+		if err := validateReasoning(cfg.OpenAI, "openai"); err != nil {
+			return Config{}, err
+		}
 	}
 	if err := validateProviders(&cfg); err != nil {
 		return Config{}, err
 	}
+	// Compression budgets are derived from the normalised channels, so this must
+	// run after presets and explicit limits are resolved.
+	applyCompressDefaults(&cfg)
 	if err := validateReasoning(cfg.CompressOpenAI, "compress_openai"); err != nil {
 		return Config{}, err
 	}
@@ -180,7 +185,9 @@ func Load(path string) (Config, error) {
 	if _, err := cfg.CompressionInputBudget(); err != nil {
 		return Config{}, err
 	}
-	resolveAPIKey(&cfg.OpenAI)
+	if len(cfg.Providers) == 0 {
+		resolveAPIKey(&cfg.OpenAI)
+	}
 	resolveAPIKey(&cfg.CompressOpenAI)
 	return cfg, nil
 }
@@ -261,31 +268,15 @@ func looksLikeAPIKey(value string) bool {
 }
 
 func applyDefaults(cfg *Config) {
-	if cfg.OpenAI.Thinking == nil {
-		cfg.OpenAI.Thinking = &ThinkingConfig{Type: "enabled"}
-	}
-	if cfg.OpenAI.ReasoningEffort == "" {
-		cfg.OpenAI.ReasoningEffort = "high"
-	}
 	if cfg.Workspace == "" {
 		cfg.Workspace = "."
 	}
-	if cfg.OpenAI.BaseURL == "" {
-		cfg.OpenAI.BaseURL = "https://api.openai.com/v1"
+	// The global openai section only survives as the single-source legacy path:
+	// with providers configured, every channel owns its own settings and nothing
+	// is inherited.
+	if len(cfg.Providers) == 0 {
+		applyLegacyOpenAIDefaults(cfg)
 	}
-	if cfg.OpenAI.APIInterface == "" {
-		cfg.OpenAI.APIInterface = "responses"
-	}
-	if cfg.OpenAI.Model == "" {
-		cfg.OpenAI.Model = "gpt-4o-mini"
-	}
-	if cfg.OpenAI.TopP == 0 {
-		cfg.OpenAI.TopP = 1
-	}
-	if cfg.OpenAI.TimeoutSeconds == 0 {
-		cfg.OpenAI.TimeoutSeconds = 10
-	}
-	applyCompressOpenAIDefaults(cfg)
 	if cfg.Prompts.System == "" {
 		cfg.Prompts.System = "prompts/system.md"
 	}
@@ -311,10 +302,20 @@ func applyDefaults(cfg *Config) {
 		cfg.Agent.RetryAttempts = 3
 	}
 	if cfg.Agent.CompressBufferTokens == 0 {
-		cfg.Agent.CompressBufferTokens = cfg.OpenAI.MaxOutputTokens
-		if cfg.Agent.CompressBufferTokens < 4096 {
-			cfg.Agent.CompressBufferTokens = 4096
+		source := cfg.OpenAI
+		if len(cfg.Providers) > 0 {
+			source = tightestProvider(cfg.Providers)
 		}
+		// Reserve must fit the tightest channel: half of the headroom left after
+		// the output budget, so a 64k-context channel still configures cleanly.
+		buffer := source.MaxOutputTokens
+		if headroom := (source.MaxContextTokens - source.MaxOutputTokens) / 2; headroom < buffer {
+			buffer = headroom
+		}
+		if buffer < 4096 {
+			buffer = 4096
+		}
+		cfg.Agent.CompressBufferTokens = buffer
 	}
 	if cfg.Agent.MaxToolResultChars == 0 {
 		cfg.Agent.MaxToolResultChars = 12000
@@ -337,44 +338,90 @@ func (cfg AgentConfig) ModeratorIsEnabled() bool {
 	return cfg.ModeratorEnabled == nil || *cfg.ModeratorEnabled
 }
 
-func applyCompressOpenAIDefaults(cfg *Config) {
-	compress := cfg.CompressOpenAI
-	if compress == (OpenAIConfig{}) {
-		cfg.CompressOpenAI = cfg.OpenAI
-		cfg.CompressOpenAI.Stream = false
-		return
+// applyLegacyOpenAIDefaults keeps a providers-less config working exactly like
+// the single-source release did.
+func applyLegacyOpenAIDefaults(cfg *Config) {
+	if cfg.OpenAI.Thinking == nil {
+		cfg.OpenAI.Thinking = &ThinkingConfig{Type: "enabled"}
 	}
-	if compress.BaseURL == "" {
-		compress.BaseURL = cfg.OpenAI.BaseURL
+	if cfg.OpenAI.ReasoningEffort == "" {
+		cfg.OpenAI.ReasoningEffort = "high"
 	}
-	if compress.APIInterface == "" {
-		compress.APIInterface = cfg.OpenAI.APIInterface
+	if cfg.OpenAI.BaseURL == "" {
+		cfg.OpenAI.BaseURL = "https://api.openai.com/v1"
 	}
-	if compress.Thinking == nil {
-		compress.Thinking = &ThinkingConfig{Type: "enabled"}
+	if cfg.OpenAI.APIInterface == "" {
+		cfg.OpenAI.APIInterface = "responses"
 	}
-	if compress.ReasoningEffort == "" {
-		compress.ReasoningEffort = "high"
+	if cfg.OpenAI.Model == "" {
+		cfg.OpenAI.Model = "gpt-4o-mini"
 	}
-	if compress.APIKey == "" && compress.APIKeyEnv == "" {
-		compress.APIKey = cfg.OpenAI.APIKey
-		compress.APIKeyEnv = cfg.OpenAI.APIKeyEnv
+	if cfg.OpenAI.TopP == 0 {
+		cfg.OpenAI.TopP = 1
 	}
-	if compress.Model == "" {
-		compress.Model = cfg.OpenAI.Model
+	if cfg.OpenAI.TimeoutSeconds == 0 {
+		cfg.OpenAI.TimeoutSeconds = 10
 	}
-	if compress.TopP == 0 {
-		compress.TopP = cfg.OpenAI.TopP
+}
+
+// applyCompressDefaults derives the compressor budget from the tightest channel
+// when compress_openai is omitted. With a provider pool the model/endpoint are
+// never used for compression (the pool serves it), only the token budget is.
+// applyCompressDefaults fills the compressor budget from the tightest channel.
+// Explicit compress_openai values always win; the endpoint/model are unused when
+// a provider pool serves compression, only the token budget matters.
+func applyCompressDefaults(cfg *Config) {
+	source := cfg.OpenAI
+	if len(cfg.Providers) > 0 {
+		source = tightestProvider(cfg.Providers)
 	}
-	if compress.MaxContextTokens == 0 {
-		compress.MaxContextTokens = cfg.OpenAI.MaxContextTokens
+	c := cfg.CompressOpenAI
+	if c.BaseURL == "" {
+		c.BaseURL = source.BaseURL
 	}
-	if compress.MaxOutputTokens == 0 {
-		compress.MaxOutputTokens = cfg.OpenAI.MaxOutputTokens
+	if c.APIInterface == "" {
+		c.APIInterface = source.APIInterface
 	}
-	if compress.TimeoutSeconds == 0 {
-		compress.TimeoutSeconds = cfg.OpenAI.TimeoutSeconds
+	if c.APIKey == "" && c.APIKeyEnv == "" {
+		c.APIKey, c.APIKeyEnv = source.APIKey, source.APIKeyEnv
 	}
-	compress.Stream = false
-	cfg.CompressOpenAI = compress
+	if c.Model == "" {
+		c.Model = source.Model
+	}
+	if c.Thinking == nil {
+		c.Thinking = &ThinkingConfig{Type: "enabled"}
+	}
+	if c.ReasoningEffort == "" {
+		c.ReasoningEffort = "high"
+	}
+	if c.Temperature == 0 {
+		c.Temperature = source.Temperature
+	}
+	if c.TopP == 0 {
+		c.TopP = source.TopP
+	}
+	if c.MaxContextTokens == 0 {
+		c.MaxContextTokens = source.MaxContextTokens
+	}
+	if c.MaxOutputTokens == 0 {
+		c.MaxOutputTokens = source.MaxOutputTokens
+	}
+	if c.TimeoutSeconds == 0 {
+		c.TimeoutSeconds = source.TimeoutSeconds
+	}
+	c.Stream = false
+	cfg.CompressOpenAI = c
+}
+
+func tightestProvider(providers []ProviderConfig) OpenAIConfig {
+	var best OpenAIConfig
+	for _, provider := range providers {
+		if !provider.IsEnabled() || provider.OpenAI.MaxContextTokens <= 0 {
+			continue
+		}
+		if best.MaxContextTokens == 0 || provider.OpenAI.MaxContextTokens < best.MaxContextTokens {
+			best = provider.OpenAI
+		}
+	}
+	return best
 }

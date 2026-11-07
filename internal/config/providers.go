@@ -342,8 +342,30 @@ func validateProviders(cfg *Config) error {
 		if err := p.applyPlanPreset(); err != nil {
 			return err
 		}
-		mergeOpenAIDefaults(&p.OpenAI, cfg.OpenAI)
+		// No inheritance: a channel is self-contained, so "which model/endpoint is
+		// in effect" never depends on an unrelated global section.
 		resolveAPIKey(&p.OpenAI)
+		if strings.TrimSpace(p.OpenAI.BaseURL) == "" {
+			return fmt.Errorf("providers.%s.openai.base_url is required（或写 vendor/plan 让预设填充）", p.ID)
+		}
+		if strings.TrimSpace(p.OpenAI.Model) == "" {
+			return fmt.Errorf("providers.%s.openai.model is required（例如 glm-5.3 / MiniMax-M3.1-Flash）", p.ID)
+		}
+		if p.OpenAI.APIInterface == "" {
+			p.OpenAI.APIInterface = "chat"
+		}
+		if p.OpenAI.Thinking == nil {
+			p.OpenAI.Thinking = &ThinkingConfig{Type: "enabled"}
+		}
+		if p.OpenAI.ReasoningEffort == "" {
+			p.OpenAI.ReasoningEffort = "high"
+		}
+		if p.OpenAI.TopP == 0 {
+			p.OpenAI.TopP = 1
+		}
+		if p.OpenAI.TimeoutSeconds == 0 {
+			p.OpenAI.TimeoutSeconds = 120
+		}
 		if err := validateReasoning(p.OpenAI, "providers."+p.ID+".openai"); err != nil {
 			return err
 		}
@@ -607,44 +629,6 @@ func validateSchedule(cfg *Config) error {
 		}
 	}
 	return nil
-}
-
-// mergeOpenAIDefaults fills a provider section from the global openai section so
-// a multi-source config only states what differs.
-func mergeOpenAIDefaults(dst *OpenAIConfig, base OpenAIConfig) {
-	if dst.BaseURL == "" {
-		dst.BaseURL = base.BaseURL
-	}
-	if dst.APIInterface == "" {
-		dst.APIInterface = base.APIInterface
-	}
-	if dst.APIKey == "" && dst.APIKeyEnv == "" {
-		dst.APIKey, dst.APIKeyEnv = base.APIKey, base.APIKeyEnv
-	}
-	if dst.Model == "" {
-		dst.Model = base.Model
-	}
-	if dst.Thinking == nil {
-		dst.Thinking = base.Thinking
-	}
-	if dst.ReasoningEffort == "" {
-		dst.ReasoningEffort = base.ReasoningEffort
-	}
-	if dst.Temperature == 0 {
-		dst.Temperature = base.Temperature
-	}
-	if dst.TopP == 0 {
-		dst.TopP = base.TopP
-	}
-	if dst.MaxContextTokens == 0 {
-		dst.MaxContextTokens = base.MaxContextTokens
-	}
-	if dst.MaxOutputTokens == 0 {
-		dst.MaxOutputTokens = base.MaxOutputTokens
-	}
-	if dst.TimeoutSeconds == 0 {
-		dst.TimeoutSeconds = base.TimeoutSeconds
-	}
 }
 
 // EffectiveTokenLimits returns the tightest window across enabled sources. A

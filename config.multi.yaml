@@ -10,24 +10,9 @@
 
 workspace: .
 
-# 全局默认值：providers 里没写的字段从这里继承（base_url/model/token 上限等）
-openai:
-  api_interface: chat
-  base_url: https://api.minimax.cn/v1
-  api_key: ""
-  api_key_env: MINIMAX_API_KEY
-  model: MiniMax-M3.1-Flash
-  thinking:
-    type: adaptive
-  reasoning_effort: max
-  temperature: 1
-  top_p: 1
-  max_context_tokens: 1000000
-  max_output_tokens: 65536
-  timeout_seconds: 120
-  stream: true
-
-# 压缩预算（模型沿用当前生效的源）
+# 没有全局 openai 段：每个渠道自带完整配置，模型/端点一目了然。
+# 报"找不到模型"时执行：./code-review-agent -config config.multi.yaml -check
+# 它会列出该端点实际可用的模型名。
 compress_openai:
   max_context_tokens: 1000000
   max_output_tokens: 65536
@@ -82,9 +67,10 @@ providers:
           reset: ["data.limits[type=TOKENS_LIMIT].nextResetTime"]
           plan: ["data.level"]
       local:
+        # 容量由 plan 决定（glm-max=28000），这里只覆盖费率口径：
+        # 兜底计量按 GLM-5.3-Flash 折算 515 积分/百万 token。
         unit: credits
-        total: 12000                # Pro 档 5 小时积分；Lite=2000 / Max=28000
-        credits_per_million_tokens: 1545
+        credits_per_million_tokens: 515
         peak:
           days: [mon, tue, wed, thu, fri]
           start: "14:00"

@@ -365,3 +365,76 @@ func TestChannelScheduleGatesRouting(t *testing.T) {
 		t.Fatalf("router picked a closed channel: %s", next.ID())
 	}
 }
+
+// The reported case: one channel is out of hours AND out of quota, the other is
+// always available. The request must move to the available channel.
+func TestFailsOverWhenOneChannelIsOutOfHoursAndCapped(t *testing.T) {
+	mmServer := chatServer(t, "from-minimax")
+	glmServer := chatServer(t, "from-glm")
+	mm := testProvider("minimax", mmServer.URL, 100)
+	mm.Quota.Local.Unit = "tokens"
+	mm.Quota.MaxUsageRatio = 0.5
+	glm := testProvider("glm", glmServer.URL, 0)
+
+	pool, err := NewPool(testConfig(mm, glm))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.chargeUsage("minimax", llm.UsageUpdate{RequestID: 1, TotalTokens: 60, Final: true})
+	// minimax is outside its window; glm is always available.
+	pool.SetChannelClock(fixedClock{open: map[string]bool{"glm": true}})
+
+	answer, err := pool.Chat(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hi"}})
+	if err != nil {
+		t.Fatalf("must fail over to the available channel: %v", err)
+	}
+	if answer != "from-glm" {
+		t.Fatalf("answer came from %q, want from-glm", answer)
+	}
+	if statuses := pool.Statuses(); statuses[1].Active != true {
+		t.Fatalf("active channel should be glm: %+v", statuses)
+	}
+}
+
+// When every channel is closed by policy the error must say so, not claim that
+// quota ran out.
+func TestAllChannelsOutOfHoursReportsPolicyNotQuota(t *testing.T) {
+	a := chatServer(t, "a")
+	pool, err := NewPool(testConfig(testProvider("a", a.URL, 0), testProvider("b", a.URL, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetChannelClock(fixedClock{open: map[string]bool{}})
+	_, err = pool.Chat(context.Background(), []llm.Message{{Role: llm.RoleUser, Content: "hi"}})
+	if !errors.Is(err, ErrOutOfHours) {
+		t.Fatalf("want ErrOutOfHours, got %v", err)
+	}
+	if errors.Is(err, ErrAllExhausted) {
+		t.Fatalf("a policy pause must not be reported as quota exhaustion: %v", err)
+	}
+	if !strings.Contains(err.Error(), "时段") {
+		t.Fatalf("message must name the working-hours policy: %v", err)
+	}
+}
+
+// A channel disabled for a missing key must be named in the diagnosis, otherwise
+// a failed failover looks inexplicable.
+func TestExhaustionReportNamesDisabledChannels(t *testing.T) {
+	a := chatServer(t, "a")
+	keyed := testProvider("minimax", a.URL, 0)
+	keyless := testProvider("glm", "https://example.invalid/v1", 0)
+	keyless.OpenAI.APIKey = ""
+	keyless.OpenAI.APIKeyEnv = "GLM_API_KEY"
+
+	pool, err := NewPool(testConfig(keyed, keyless))
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := pool.ExhaustionReport()
+	if !strings.Contains(report, "glm") || !strings.Contains(report, "已停用") || !strings.Contains(report, "GLM_API_KEY") {
+		t.Fatalf("disabled channel not explained: %q", report)
+	}
+	if !strings.Contains(report, "minimax") {
+		t.Fatalf("enabled channel missing from the report: %q", report)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"code-review-agent/internal/llm"
 )
@@ -12,6 +13,30 @@ import (
 // ErrAllExhausted means every enabled source refused for quota reasons. The
 // caller must pause and resume later instead of treating it as a crash.
 var ErrAllExhausted = errors.New("所有源余量均不足")
+
+// ErrOutOfHours means every enabled source is outside its working-hours policy.
+// It is not a quota problem: nothing was attempted and nothing was consumed.
+var ErrOutOfHours = errors.New("所有渠道均不在工作时段")
+
+// OutOfHoursError carries when the next window opens so the caller can park the
+// run instead of reporting a failure.
+type OutOfHoursError struct {
+	NextOpen time.Time
+	Detail   string
+}
+
+func (e *OutOfHoursError) Error() string {
+	when := "未知"
+	if !e.NextOpen.IsZero() {
+		when = e.NextOpen.Local().Format("01-02 15:04")
+	}
+	if e.Detail == "" {
+		return fmt.Sprintf("%s（预计 %s 恢复）", ErrOutOfHours.Error(), when)
+	}
+	return fmt.Sprintf("%s（预计 %s 恢复；%s）", ErrOutOfHours.Error(), when, e.Detail)
+}
+
+func (e *OutOfHoursError) Is(target error) bool { return target == ErrOutOfHours }
 
 type FailureKind int
 
@@ -23,6 +48,7 @@ const (
 	FailureContext
 	FailureNetwork
 	FailureProtocol
+	FailureModel
 )
 
 func (k FailureKind) String() string {
@@ -39,6 +65,8 @@ func (k FailureKind) String() string {
 		return "network"
 	case FailureProtocol:
 		return "protocol"
+	case FailureModel:
+		return "model_not_found"
 	}
 	return "other"
 }
@@ -55,6 +83,11 @@ var billingMarkers = []string{
 	"credit balance", "credits exhausted", "quota exceeded", "quota_exceeded", "billing_hard_limit",
 	"exceeded your current quota", "openai status 402:", "usage limit reached", "5h limit",
 	"limit reached", "套餐额度", "额度耗尽",
+}
+
+var modelMarkers = []string{
+	"model not found", "modelnotfound", "model_not_found", "no such model", "unknown model",
+	"invalid model", "模型不存在", "找不到模型", "无效的模型", "模型未找到",
 }
 
 var authMarkers = []string{
@@ -77,6 +110,9 @@ func classifyFailure(err error) FailureKind {
 	text := strings.ToLower(err.Error())
 	if isContextLength(text) {
 		return FailureContext
+	}
+	if hasMarker(text, modelMarkers) {
+		return FailureModel
 	}
 	if hasMarker(text, authMarkers) {
 		return FailureAuth

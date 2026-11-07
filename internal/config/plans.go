@@ -175,6 +175,9 @@ func applyVendorDefaults(p *ProviderConfig) {
 		if p.OpenAI.MaxContextTokens == 0 {
 			p.OpenAI.MaxContextTokens = 200000
 		}
+		if p.OpenAI.MaxOutputTokens == 0 {
+			p.OpenAI.MaxOutputTokens = 65536
+		}
 		if p.Quota.Probe.Type == "" && p.Quota.Probe.URL == "" {
 			p.Quota.Probe = ProbeConfig{Type: "http", IntervalSeconds: 120, TimeoutSeconds: 15, Unit: "percent",
 				URL:     "https://open.bigmodel.cn/api/monitor/usage/quota/limit",
@@ -185,6 +188,15 @@ func applyVendorDefaults(p *ProviderConfig) {
 		p.Vendor = "minimax"
 		if p.OpenAI.BaseURL == "" {
 			p.OpenAI.BaseURL = "https://api.minimax.cn/v1"
+		}
+		if p.OpenAI.Model == "" {
+			p.OpenAI.Model = "MiniMax-M3.1-Flash"
+		}
+		if p.OpenAI.MaxContextTokens == 0 {
+			p.OpenAI.MaxContextTokens = 1000000
+		}
+		if p.OpenAI.MaxOutputTokens == 0 {
+			p.OpenAI.MaxOutputTokens = 65536
 		}
 		if p.Quota.Probe.Type == "" && len(p.Quota.Probe.Command) == 0 {
 			p.Quota.Probe = ProbeConfig{Type: "command", IntervalSeconds: 300, TimeoutSeconds: 20, Unit: "percent",

@@ -130,23 +130,45 @@ infinite 8 0 0
 
 一份订阅跑不完一个大项目，两份订阅又不想手动盯着。程序内置了一个多源池：把 GLM Coding Plan 和 MiniMax M Plan 都配进去，按各自 5 小时窗口的余量自动分配，一侧见底就换另一侧；两侧都空就暂停，到点自动接着跑。配置见 `config.multi.yaml`。
 
-### 0. 已有单源配置怎么加第二个源
+### 0. 配置：只有渠道，没有全局默认值
 
-不改原有 `openai:` 段，直接在下面加 `providers:` 段即可：`openai` 继续当全局默认值，`providers` 里列出的才是真正生效的源。仓库里的 `config.yaml` 已经按这个结构放好 MiniMax + GLM 两段，GLM 的 key 留空等你自己填。
+没有全局 `openai:` 段了。每个 `providers[]` 条目自带 endpoint / key / 模型 / 上下文，谁生效一目了然，也不会出现"模型名到底从哪继承来的"这种问题。
 
-**没填 key 的源会自动标记「已停用」并跳过**，不会让整个程序起不来，也不会让请求打到没配 key 的端点上：先跑通一个源，key 到位后重启就变成双源。
+```yaml
+providers:
+  - id: glm
+    vendor: glm                 # 端点、探测方式、抵扣系数由 vendor/plan 决定
+    plan: glm-max               # 容量档位：2000 / 12000 / 28000 积分每 5 小时
+    openai:
+      base_url: https://open.bigmodel.cn/api/coding/paas/v4
+      api_key_env: GLM_API_KEY
+      model: glm-5.3
+      max_context_tokens: 200000
+      max_output_tokens: 65536
+```
+
+- 想少写字段：`vendor` + `plan` 已经能填出端点、模型、上下文、探测与费率；写了就以你写的为准。
+- **没填 key 的渠道会自动标记「已停用」并跳过**，不会让程序起不来，也不会把请求打到没配 key 的端点。
+- **报「找不到模型」**：`./code-review-agent -config config.yaml -check` 会直接问端点要模型列表并打印出来，不在列表里会标出来。实测两个端点：
+
+```
+模型 glm-5.3：可用 glm-4.5, glm-4.5-air, glm-4.6, glm-4.7, glm-5, glm-5-turbo, glm-5.1, glm-5.2, glm-5.3, glm-5.3-flash, …
+模型 MiniMax-M3.1-Flash：可用 MiniMax-M3.1-Flash, MiniMax-M3, MiniMax-M2.7, MiniMax-M2.7-highspeed, …
+```
+
+- `compress_openai` 可省略：压缩预算自动取所有启用渠道里最紧的上下文，压缩调用本身走渠道池（享受换源）。
 
 ### 1. 快速开始
 
 ```bash
 cp .env.example .env && chmod 600 .env        # 填 GLM_API_KEY / MINIMAX_API_KEY
-./code-review-agent -config config.multi.yaml -check   # 非交互自检，先看余量与时段
-./code-review-agent -config config.multi.yaml         # 进入 TUI
+./code-review-agent -config config.yaml -check   # 非交互自检：余量、模型名、时段、队列
+./code-review-agent -config config.yaml          # 进入 TUI
 ```
 
-`-check` 会打印每个源的余量、探针结果、时间窗状态和任务队列，不进入界面——排查配置最快的方式。
+`-check` 会打印每个渠道的余量、探针结果、**端点可用模型名**、时间窗状态和任务队列，不进入界面——排查配置最快的方式。
 
-不写 `providers` 段的旧 `config.yaml` 完全兼容：程序会把 `openai` 段自动合成一个名为 `default` 的源。
+只有完全没写 `providers` 的旧配置才会走单源兼容路径（把 `openai` 段当作唯一渠道）。
 
 ### 2. 5 小时余量怎么来的
 

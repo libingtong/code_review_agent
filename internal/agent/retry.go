@@ -81,6 +81,12 @@ func (a *Agent) modelRequest(ctx context.Context, emit func(Event), request func
 		if err == nil {
 			return answer, nil
 		}
+		if errors.Is(err, provider.ErrOutOfHours) {
+			if a.onDisconnect != nil {
+				a.onDisconnect(err)
+			}
+			return "", fmt.Errorf("不在工作时段，已暂停并保留进度，窗口开启后自动继续: %w", err)
+		}
 		if isBillingExhausted(err) {
 			if a.onDisconnect != nil {
 				a.onDisconnect(err)
@@ -140,6 +146,31 @@ func (a *Agent) modelRequest(ctx context.Context, emit func(Event), request func
 // pool the pause is resumable: the earliest 5h reset is recorded so the
 // scheduler can wake the team up instead of waiting for a manual go.
 func (t *Team) modelDisconnected(err error) {
+	if errors.Is(err, provider.ErrOutOfHours) {
+		var out *provider.OutOfHoursError
+		reason, until := "不在工作时段", time.Time{}
+		if errors.As(err, &out) {
+			until = out.NextOpen
+			if out.Detail != "" {
+				reason += "（" + out.Detail + "）"
+			}
+		}
+		t.mu.Lock()
+		cancel := t.cancel
+		t.mu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		t.pauseForWindow(reason, until)
+		notice := "不在工作时段：已暂停并保留进度。"
+		if !until.IsZero() {
+			notice = fmt.Sprintf("不在工作时段：已暂停并保留进度，预计 %s 自动继续。", until.Local().Format("01-02 15:04"))
+		}
+		t.publish(Event{Kind: "paused", Content: notice})
+		t.publish(Event{Kind: "info", Content: notice})
+		t.emitState()
+		return
+	}
 	if !isBillingExhausted(err) {
 		return
 	}

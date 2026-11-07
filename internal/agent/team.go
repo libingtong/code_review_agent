@@ -81,6 +81,7 @@ type Team struct {
 	userBroadcasts     []userBroadcast
 	sessionPath        string
 	pool               *provider.Pool
+	gate               Gate
 	pauseReason        string
 	pauseUntil         time.Time
 	now                func() time.Time
@@ -198,6 +199,29 @@ func (t *Team) Workspace() string { return t.registry.Workspace() }
 // Pool is the multi-source router. Nil means the caller injected a single
 // llm.Client directly (tests, legacy embedding).
 func (t *Team) Pool() *provider.Pool { t.mu.Lock(); defer t.mu.Unlock(); return t.pool }
+
+// Gate is the admission policy checked before a run starts. Nil means "no
+// policy" (single-source embedding, tests).
+type Gate interface {
+	Check() GateDecision
+}
+
+type GateDecision struct {
+	Allowed  bool
+	Reason   string
+	ResumeAt time.Time
+}
+
+// SetGate installs the admission policy so a closed working-hours window parks
+// the run instead of letting the router discover it per request.
+func (t *Team) SetGate(gate Gate) { t.mu.Lock(); t.gate = gate; t.mu.Unlock() }
+
+// pauseForWindow records a resumable policy pause without touching run state.
+func (t *Team) pauseForWindow(reason string, until time.Time) {
+	t.mu.Lock()
+	t.pauseReason, t.pauseUntil = reason, until
+	t.mu.Unlock()
+}
 
 // PauseInfo reports why the last run stopped and when it may resume. An empty
 // reason means the team is not quota-paused.
@@ -445,6 +469,25 @@ func (t *Team) createStageLocked(stage string) {
 }
 
 func (t *Team) Run(ctx context.Context, input string, emit func(Event)) {
+	// Admission first: a closed window must park the run instead of letting the
+	// router hit every request and report it as "no quota".
+	t.mu.Lock()
+	gate := t.gate
+	t.mu.Unlock()
+	if gate != nil {
+		if decision := gate.Check(); !decision.Allowed {
+			t.pauseForWindow(decision.Reason, decision.ResumeAt)
+			notice := "未启动：" + decision.Reason
+			if !decision.ResumeAt.IsZero() {
+				notice += "，预计 " + decision.ResumeAt.Local().Format("01-02 15:04") + " 自动继续"
+			}
+			if emit != nil {
+				emit(Event{Kind: "paused", Content: notice})
+				emit(Event{Kind: "info", Content: notice})
+			}
+			return
+		}
+	}
 	t.emitMu.Lock()
 	t.mu.Lock()
 	if t.running {

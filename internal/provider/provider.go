@@ -29,7 +29,10 @@ type Provider struct {
 	enabled bool
 	// lastProbeUnix is read/written atomically by the quota loop.
 	lastProbeUnix int64
-	limiter       *Limiter
+	// disabledReason explains why a channel is out of rotation, so "why didn't
+	// it fail over?" has an answer in the error text itself.
+	disabledReason string
+	limiter        *Limiter
 }
 
 func (p *Provider) ID() string    { return p.cfg.ID }
@@ -44,7 +47,29 @@ func (p *Provider) Enabled() bool {
 func (p *Provider) setEnabled(value bool) {
 	p.mu.Lock()
 	p.enabled = value
+	if value {
+		p.disabledReason = ""
+	}
 	p.mu.Unlock()
+}
+
+func (p *Provider) setDisabledReason(reason string) {
+	p.mu.Lock()
+	p.disabledReason = reason
+	p.mu.Unlock()
+}
+
+// DisabledReason reports why the channel is out of rotation ("" when enabled).
+func (p *Provider) DisabledReason() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.enabled {
+		return ""
+	}
+	if p.disabledReason == "" {
+		return "已停用"
+	}
+	return p.disabledReason
 }
 
 // Model reports the model name actually used, for status display and tests.
@@ -75,12 +100,14 @@ type Status struct {
 	// Self-imposed usage cap: Ceiling is the portion this program may consume,
 	// Usable is what is left of it, Capped means the cap (not the vendor) stops us.
 	// Scheduled reports whether the channel's working-hours policy allows it now.
-	Scheduled     bool    `json:"scheduled"`
-	Ceiling       float64 `json:"ceiling"`
-	Usable        float64 `json:"usable"`
-	SelfLimited   bool    `json:"self_limited"`
-	Capped        bool    `json:"capped"`
-	MaxUsageRatio float64 `json:"max_usage_ratio"`
+	Scheduled bool `json:"scheduled"`
+	// DisabledReason explains an out-of-rotation channel ("" when enabled).
+	DisabledReason string  `json:"disabled_reason,omitempty"`
+	Ceiling        float64 `json:"ceiling"`
+	Usable         float64 `json:"usable"`
+	SelfLimited    bool    `json:"self_limited"`
+	Capped         bool    `json:"capped"`
+	MaxUsageRatio  float64 `json:"max_usage_ratio"`
 	// PlanObserved is the tier the vendor reports for this channel.
 	PlanObserved string `json:"plan_observed,omitempty"`
 	// Adaptive concurrency: the limit currently in force, its ceiling and how
@@ -174,9 +201,10 @@ func (p *Pool) skipKeyless() error {
 		if !provider.Enabled() || strings.TrimSpace(provider.cfg.OpenAI.APIKey) != "" {
 			continue
 		}
+		reason := fmt.Sprintf("未配置 API key（%s）", envHint(provider.cfg.OpenAI))
 		provider.setEnabled(false)
-		p.appendNote(fmt.Sprintf("源 %s 未配置 API key（%s），已跳过；填入后重启或 /providers 启用",
-			provider.ID(), envHint(provider.cfg.OpenAI)))
+		provider.setDisabledReason(reason)
+		p.appendNote(fmt.Sprintf("源 %s %s，已跳过；填入后重启或 /providers 启用", provider.ID(), reason))
 	}
 	return nil
 }
@@ -387,6 +415,7 @@ func (p *Pool) Statuses() []Status {
 		status.Enabled, status.Weight = provider.Enabled(), provider.cfg.Weight
 		status.Active = provider.ID() == p.active
 		status.Scheduled = clockOpenAt(p.clock, provider.ID(), now)
+		status.DisabledReason = provider.DisabledReason()
 		status.LastError = p.lastErr[provider.ID()]
 		if provider.limiter != nil {
 			status.Concurrency = provider.limiter.Current()
@@ -420,6 +449,9 @@ func (p *Pool) SetEnabled(id string, enabled bool) error {
 		}
 	}
 	provider.setEnabled(enabled)
+	if !enabled {
+		provider.setDisabledReason("手动停用（/providers 里按 e 恢复）")
+	}
 	previous := p.active
 	if !enabled && previous == id {
 		p.active = p.orderLocked(nil)[0].ID()

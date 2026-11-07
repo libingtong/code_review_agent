@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -80,6 +81,7 @@ func main() {
 
 	runner := agent.NewTeam(cfg, prompts, pool, pool, registry)
 	runner.SetPool(pool)
+	runner.SetGate(gateAdapter{gate: gate})
 	defer runner.Close()
 
 	var tasks *orchestrator.Runner
@@ -120,6 +122,9 @@ func printCheck(cfg config.Config, pool *provider.Pool, gate *schedule.Gate, tas
 		sample, raw, err := pool.RefreshQuota(probeCtx, status.ID)
 		if err != nil {
 			fmt.Printf("  探针 %s：%v\n", status.ID, err)
+			// Still report the model list: a missing model is a different problem
+			// from a missing quota probe.
+			printModelCheck(probeCtx, pool, status)
 			continue
 		}
 		plan := ""
@@ -132,6 +137,7 @@ func printCheck(cfg config.Config, pool *provider.Pool, gate *schedule.Gate, tas
 		}
 		fmt.Printf("  探针 %s：used=%s total=%s%s reset=%s raw=%d bytes\n",
 			status.ID, provider.FormatUnits(sample.Used), provider.FormatUnits(sample.Total), plan, reset, len(raw))
+		printModelCheck(probeCtx, pool, status)
 	}
 	fmt.Printf("时间窗：%s\n", gate.Describe())
 	decision := gate.Check()
@@ -146,4 +152,46 @@ func printCheck(cfg config.Config, pool *provider.Pool, gate *schedule.Gate, tas
 			fmt.Printf("  %s [%s] %s\n", task.ID, task.Status, task.Title)
 		}
 	}
+}
+
+// printModelCheck reports whether the configured model exists on that endpoint.
+func printModelCheck(ctx context.Context, pool *provider.Pool, status provider.Status) {
+	if !status.Enabled {
+		return
+	}
+	models, err := pool.ListModels(ctx, status.ID)
+	if err != nil {
+		fmt.Printf("  模型 %s：端点未提供列表（%v）\n", status.Model, err)
+		return
+	}
+	found := false
+	for _, name := range models {
+		if name == status.Model {
+			found = true
+			break
+		}
+	}
+	note := ""
+	if !found {
+		note = "  ← 当前配置的名字不在列表中，请改成下列之一"
+	}
+	fmt.Printf("  模型 %s：可用 %s%s\n", status.Model, strings.Join(shortList(models, 12), ", "), note)
+}
+
+// shortList bounds a model list for terminal output.
+func shortList(values []string, limit int) []string {
+	if len(values) <= limit {
+		return values
+	}
+	out := append([]string(nil), values[:limit]...)
+	return append(out, fmt.Sprintf("…共 %d 个", len(values)))
+}
+
+// gateAdapter exposes schedule.Gate to the agent layer without leaking its
+// decision type across packages.
+type gateAdapter struct{ gate *schedule.Gate }
+
+func (a gateAdapter) Check() agent.GateDecision {
+	decision := a.gate.Check()
+	return agent.GateDecision{Allowed: decision.Allowed, Reason: decision.Reason, ResumeAt: decision.ResumeAt}
 }

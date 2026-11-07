@@ -35,6 +35,11 @@ func runRequest[T any](p *Pool, ctx context.Context, label string, emitted *bool
 		}
 		provider := p.nextProvider(excluded)
 		if provider == nil {
+			// "Outside working hours" is a policy pause, not a quota problem:
+			// reporting it as exhaustion sends people chasing the wrong cause.
+			if out := p.outOfHours(); out != nil {
+				return zero, "", out
+			}
 			if lastErr == nil {
 				return zero, "", fmt.Errorf("%w：%s", ErrAllExhausted, p.ExhaustionReport())
 			}
@@ -185,6 +190,42 @@ func (p *Pool) nextProvider(excluded map[string]bool) *Provider {
 	return nil
 }
 
+// outOfHours reports a schedule-only block: every enabled channel is closed by
+// its working-hours policy and none of them refused for quota reasons.
+func (p *Pool) outOfHours() error {
+	now := p.now()
+	p.mu.RLock()
+	providers := append([]*Provider(nil), p.providers...)
+	clock := p.clock
+	p.mu.RUnlock()
+	if clock == nil {
+		return nil
+	}
+	enabled := 0
+	var next time.Time
+	for _, provider := range providers {
+		if !provider.Enabled() {
+			continue
+		}
+		enabled++
+		if clockOpenAt(clock, provider.ID(), now) {
+			return nil
+		}
+		if nextOpen, ok := clock.(interface {
+			NextOpenAt(string, time.Time) time.Time
+		}); ok {
+			candidate := nextOpen.NextOpenAt(provider.ID(), now)
+			if !candidate.IsZero() && (next.IsZero() || candidate.Before(next)) {
+				next = candidate
+			}
+		}
+	}
+	if enabled == 0 {
+		return nil
+	}
+	return &OutOfHoursError{NextOpen: next, Detail: p.ExhaustionReport()}
+}
+
 // ExhaustionReport names the reason each enabled channel cannot take work. When
 // every source is unusable the user needs to know which brake engaged.
 func (p *Pool) ExhaustionReport() string {
@@ -196,6 +237,8 @@ func (p *Pool) ExhaustionReport() string {
 	var parts []string
 	for _, provider := range providers {
 		if !provider.Enabled() {
+			// Naming disabled channels is what explains "why no failover".
+			parts = append(parts, provider.ID()+": 已停用（"+provider.DisabledReason()+"）")
 			continue
 		}
 		status := provider.quota.Status(now)

@@ -33,10 +33,7 @@ chmod 600 .env
 
 ## 2.0 加一个 GLM 源（key 自己填）
 
-`config.yaml` 里现在有两处 API 配置：
-
-- `openai:` —— 全局默认值（MiniMax），providers 里没写的字段都从这里继承；
-- `providers:` —— 真正生效的源列表，`minimax` 继承默认值，`glm` 是独立一段。
+`config.yaml` 里只有 `providers:`——每个渠道自带 endpoint / key / 模型 / 上下文，没有全局默认值可继承。
 
 填 key 两种方式，二选一：
 

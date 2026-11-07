@@ -23,55 +23,63 @@ func TestLegacyOpenAISectionSynthesisesSingleProvider(t *testing.T) {
 	}
 }
 
-func TestProvidersInheritSharedDefaults(t *testing.T) {
-	cfg, err := loadBudgetConfig(t, `
-openai:
-  base_url: https://api.example.com/v1
-  api_key: sk-shared
-  model: base-model
-  max_context_tokens: 200000
-  max_output_tokens: 8192
+func TestProvidersAreSelfContained(t *testing.T) {
+	// A channel must state its own endpoint and model: nothing is inherited from
+	// an unrelated global section any more.
+	if _, err := loadBudgetConfig(t, `
 providers:
   - id: a
     openai:
-      model: a-model
-  - id: b
+      api_key: sk-a
+`); err == nil {
+		t.Fatal("a channel without base_url/model must be rejected")
+	}
+
+	cfg, err := loadBudgetConfig(t, `
+providers:
+  - id: glm
+    vendor: glm
     openai:
-      model: b-model
+      api_key: sk-glm
+      max_context_tokens: 200000
+      max_output_tokens: 32768
+  - id: custom
+    openai:
+      base_url: https://gateway.internal/v1
+      api_key: sk-custom
+      model: internal-model
       max_context_tokens: 64000
+      max_output_tokens: 8192
 `)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Providers) != 2 {
-		t.Fatalf("providers = %d", len(cfg.Providers))
+	glm, custom := cfg.Providers[0], cfg.Providers[1]
+	if glm.OpenAI.BaseURL == "" || glm.OpenAI.Model != "glm-5.3" {
+		t.Fatalf("vendor defaults missing: %+v", glm.OpenAI)
 	}
-	a, b := cfg.Providers[0], cfg.Providers[1]
-	if a.OpenAI.BaseURL != "https://api.example.com/v1" || a.OpenAI.APIKey != "sk-shared" || a.OpenAI.MaxContextTokens != 200000 {
-		t.Fatalf("provider a did not inherit shared defaults: %+v", a.OpenAI)
+	if glm.OpenAI.APIKey != "sk-glm" || custom.OpenAI.APIKey != "sk-custom" {
+		t.Fatal("per-channel keys must not be shared")
 	}
-	if b.OpenAI.MaxContextTokens != 64000 {
-		t.Fatalf("explicit provider limit was overwritten: %d", b.OpenAI.MaxContextTokens)
-	}
-	if a.Weight != 1 || b.Weight != 1 || a.Label != "a" {
-		t.Fatalf("provider defaults wrong: %+v %+v", a, b)
+	if custom.OpenAI.Model != "internal-model" || custom.OpenAI.MaxContextTokens != 64000 {
+		t.Fatalf("explicit channel settings lost: %+v", custom.OpenAI)
 	}
 }
 
 func TestEffectiveTokenLimitsUsesTightestSource(t *testing.T) {
 	cfg, err := loadBudgetConfig(t, `
-openai:
-  base_url: https://api.example.com/v1
-  api_key: sk-shared
-  model: m
-  max_context_tokens: 1000000
-  max_output_tokens: 65536
 providers:
   - id: wide
     openai:
+      base_url: https://api.example.com/v1
+      api_key: sk-wide
       model: wide
+      max_context_tokens: 1000000
+      max_output_tokens: 65536
   - id: narrow
     openai:
+      base_url: https://api.example.com/v1
+      api_key: sk-narrow
       model: narrow
       max_context_tokens: 200000
       max_output_tokens: 32768
@@ -90,7 +98,7 @@ providers:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if threshold >= 200000 || threshold <= 0 {
+	if threshold <= 0 || threshold >= 200000 {
 		t.Fatalf("compression threshold must be bounded by the narrow source: %d", threshold)
 	}
 }
@@ -195,21 +203,21 @@ func TestRoutingDefaults(t *testing.T) {
 
 func TestProviderConfigRequiresIndependentKeys(t *testing.T) {
 	cfg, err := loadBudgetConfig(t, `
-openai:
-  base_url: https://api.example.com/v1
-  api_key_env: SHARED_KEY
-  model: m
 providers:
   - id: glm
     openai:
       base_url: https://open.bigmodel.cn/api/coding/paas/v4
       api_key: sk-glm
       model: glm-5.3
+      max_context_tokens: 200000
+      max_output_tokens: 65536
   - id: mm
     openai:
       base_url: https://api.minimax.cn/v1
       api_key: sk-mm
       model: MiniMax-M3.1-Flash
+      max_context_tokens: 1000000
+      max_output_tokens: 65536
 `)
 	if err != nil {
 		t.Fatal(err)
@@ -218,7 +226,7 @@ providers:
 		t.Fatal("per-source keys must not be merged")
 	}
 	if cfg.Providers[0].OpenAI.APIKeyEnv != "" {
-		t.Fatal("an explicit per-source key must not drag in the shared env name")
+		t.Fatal("no env name should be invented for a channel with an explicit key")
 	}
 	if strings.Contains(cfg.Providers[0].OpenAI.BaseURL, "minimax") {
 		t.Fatal("base urls must stay per source")

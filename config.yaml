@@ -1,64 +1,58 @@
 workspace: .
 
-# 全局默认值：providers 里没写的字段从这里继承。
-# 这里原本只有这一处 API 配置；现在它是"默认源"，真正的多源在下面的 providers 段。
-openai:
-  api_interface: chat
-  base_url: https://api.minimax.cn/v1
-  api_key: ""
-  api_key_env: MINIMAX_API_KEY
-  model: MiniMax-M3.1-Flash
-  thinking:
-    type: adaptive
-  reasoning_effort: max
-  temperature: 1
-  top_p: 1
-  max_context_tokens: 1000000
-  max_output_tokens: 65536
-  timeout_seconds: 120
-  stream: true
-
-# ============================== 多源 ==============================
-# 两个源按 5 小时窗口余量自动轮换；一侧见底换另一侧，都空则暂停并等窗口刷新。
-# key 两种写法都行：
-#   1) 写 api_key_env，把 key 放在 .env 里（推荐，不会进 git）
-#   2) 直接写 api_key（注意别提交）
+# ============================== 渠道 ==============================
+# 没有全局 openai 段了：每个渠道自带 endpoint / key / 模型 / 上下文，
+# 谁生效一目了然，也不会出现"模型名到底从哪来的"。
 providers:
-  # 每个渠道各自持有自己的 5 小时窗口、自己的额度基数、自己的自设上限。
-  # 同一个厂商可以开多个渠道（不同 key / 不同套餐），互不影响。
   - id: minimax
     label: MiniMax M Plan
-    vendor: minimax
-    plan: minimax-mplan     # 决定额度单位(%)与探测方式(mmx quota)
+    vendor: minimax           # 探测方式/额度单位由 vendor 决定
+    plan: minimax-mplan       # 额度单位与容量：percent, 100
     enabled: true
-    weight: 2               # 权重高的优先用（MiniMax 额度更宽松）
+    weight: 2
+    openai:
+      api_interface: chat
+      base_url: https://api.minimax.cn/v1
+      api_key: ""
+      api_key_env: MINIMAX_API_KEY
+      model: MiniMax-M3.1-Flash
+      thinking:
+        type: adaptive
+      reasoning_effort: max
+      temperature: 1
+      top_p: 1
+      max_context_tokens: 1000000
+      max_output_tokens: 65536
+      timeout_seconds: 120
+      stream: true
 
   - id: glm
     label: GLM Coding Plan
-    vendor: glm             # 决定端点、探测端点与抵扣系数
-    plan: glm-max           # glm-lite=2000 / glm-pro=12000 / glm-max=28000 积分每 5 小时
-                            # （接口回 data.level=max，容量按 max 档算）
+    vendor: glm
+    plan: glm-max             # lite=2000 / pro=12000 / max=28000 积分每 5 小时
     enabled: true
     weight: 1
     openai:
-      # GLM Coding Plan 的 OpenAI Chat 端点；Responses 协议用
-      # https://open.bigmodel.cn/api/v1 并把 api_interface 改成 responses
+      # 必须用「个人编程套餐」里新建的 key，与标准 API key 不通用
       api_interface: chat
-      # 注意：要填"个人编程套餐"里新建的 key，与标准 API key 不通用
+      base_url: https://open.bigmodel.cn/api/coding/paas/v4
       api_key: ""
       api_key_env: GLM_API_KEY
+      model: glm-5.3-flash           # 若报"找不到模型"，用 -check 查看该端点可用模型
       thinking:
         type: enabled
       reasoning_effort: high
+      temperature: 1
+      top_p: 1
+      max_context_tokens: 1000000
+      max_output_tokens: 65536
       timeout_seconds: 300
       stream: true
     quota:
-      min_headroom: 0.10    # 余量低于 10% 提前让位，免得审计中途断供
-      max_usage_ratio: 0.9  # 本程序最多用 90%，剩下留给其它工具（/limit glm 90% 可改）
-    # 渠道级时段：覆盖全局设置。enabled: false = 忽略全局、全天可用。
-    # 想给 GLM 单独设窗口就改成 enabled: true + windows: [...]。
+      min_headroom: 0.10
+      max_usage_ratio: 0.9
     schedule:
-      enabled: false
+      enabled: false          # 本渠道忽略全局时段，全天可用
 
   # 例子：同厂商第二个渠道（另一份套餐或另一个 key），额度独立计算
   # - id: glm-lite
@@ -67,9 +61,12 @@ providers:
   #   plan: glm-lite
   #   weight: 1
   #   openai:
+  #     api_interface: chat
+  #     base_url: https://open.bigmodel.cn/api/coding/paas/v4
   #     api_key_env: GLM_LITE_API_KEY
-  #   quota:
-  #     max_usage_ratio: 0.8
+  #     model: glm-5.3
+  #     max_context_tokens: 200000
+  #     max_output_tokens: 65536
 
 # 5 小时窗口状态与自设上限的落盘位置（重启不会把半个窗口当成满额）
 quota:

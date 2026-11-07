@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"math"
 	"strconv"
 	"strings"
@@ -181,8 +184,12 @@ func (p *Pool) QuotaLines() []string {
 		if status.PlanObserved != "" && planDiffers(status.Plan, status.PlanObserved) {
 			channel += "→ 接口报告 " + status.PlanObserved + "，请核对 plan"
 		}
+		reason := ""
+		if !status.Enabled && status.DisabledReason != "" {
+			reason = "（" + status.DisabledReason + "）"
+		}
 		lines = append(lines, fmt.Sprintf("%s%s（%s · %s）%s · %s · %s · %s · %s · 并发 %d/%d",
-			marker, status.Label, status.ID, channel, ratio, state, reset, status.Unit, status.Model, status.Concurrency, status.MaxConcur))
+			marker, status.Label, status.ID, channel, ratio, state+reason, reset, status.Unit, status.Model, status.Concurrency, status.MaxConcur))
 	}
 	return lines
 }
@@ -254,4 +261,74 @@ func (p *Pool) ProbeConfigOf(id string) (config.ProbeConfig, bool) {
 		return config.ProbeConfig{}, false
 	}
 	return provider.cfg.Quota.Probe, true
+}
+
+// ListModels asks the channel which model names it accepts. It is the quickest
+// way to fix a "model not found" error: the endpoint itself reports the names.
+func (p *Pool) ListModels(ctx context.Context, id string) ([]string, error) {
+	provider, err := p.byID(id)
+	if err != nil {
+		return nil, err
+	}
+	base := strings.TrimRight(provider.cfg.OpenAI.BaseURL, "/")
+	if base == "" {
+		return nil, fmt.Errorf("渠道 %s 没有 base_url", id)
+	}
+	timeout := time.Duration(provider.cfg.OpenAI.TimeoutSeconds) * time.Second
+	if timeout <= 0 || timeout > 30*time.Second {
+		timeout = 20 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+provider.cfg.OpenAI.APIKey)
+	resp, err := (&http.Client{Timeout: timeout}).Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("%s/models 返回 HTTP %d（%s）", base, resp.StatusCode, snippet(string(body), 160))
+	}
+	return parseModelList(body)
+}
+
+func parseModelList(body []byte) ([]string, error) {
+	var envelope struct {
+		Data   []struct{ ID string `json:"id"` } `json:"data"`
+		Models []string                          `json:"models"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		// Some gateways answer with a bare array of names or objects.
+		var list []string
+		if jsonErr := json.Unmarshal(body, &list); jsonErr == nil {
+			return list, nil
+		}
+		var objects []struct{ ID string `json:"id"` }
+		if jsonErr := json.Unmarshal(body, &objects); jsonErr == nil {
+			for _, object := range objects {
+				list = append(list, object.ID)
+			}
+			return list, nil
+		}
+		return nil, fmt.Errorf("无法解析模型列表：%s", snippet(string(body), 160))
+	}
+	var names []string
+	for _, entry := range envelope.Data {
+		if entry.ID != "" {
+			names = append(names, entry.ID)
+		}
+	}
+	names = append(names, envelope.Models...)
+	if len(names) == 0 {
+		return nil, fmt.Errorf("端点返回了空的模型列表：%s", snippet(string(body), 160))
+	}
+	return names, nil
 }
