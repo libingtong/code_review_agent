@@ -15,6 +15,7 @@ import (
 )
 
 func (m *Model) submit(value string) tea.Cmd {
+	m.suggestions = nil
 	command, arg := parseCommand(value)
 	if strings.HasPrefix(value, "/") || command == "go" || command == "budget" || command == "restore" || command == "report" || command == "list" || command == "export" || command == "save" || command == "session" || command == "sessions" || command == "agents" || command == "providers" || command == "quota" || command == "window" || command == "tasks" || command == "limit" || command == "concurrency" || command == "mode" {
 		switch command {
@@ -157,6 +158,7 @@ func (m *Model) submit(value string) tea.Cmd {
 		case "help":
 			m.showDetail("操作帮助", []string{
 				"输入目录或 /dir <目录>：开始新审计；支持带空格的引号路径。",
+				"输入 / 会列出命令，Tab 补全当前高亮项，↑↓ 选择，Esc 收起。",
 				"/budget：停止时打开预算表单；Tab 切换字段、←→ 选择模式、Ctrl+S 保存。0 表示不限；仅无限模式执行时间/token限额。",
 				"/providers：源列表；↑↓ 选择、Enter 强制切换、e 启停、r 刷新余量。/providers <ID> 直接切换。",
 				"/quota [ID]：查看各源 5 小时余量与恢复时间；带 ID 时刷新并显示原始响应，便于修正字段映射。",

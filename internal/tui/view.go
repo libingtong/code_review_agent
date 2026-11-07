@@ -683,11 +683,15 @@ func (m Model) View() string {
 	} else {
 		panels = lipgloss.JoinHorizontal(lipgloss.Top, m.renderLeft(left, height), " ", m.renderForum(right, height))
 	}
-	help := "Tab 面板 · ↑↓选帖 Enter详情 ←→翻页 · Ctrl+G×2 到底 · 点击标题 · PgUp/PgDn/滚轮 · Esc暂停 · /help"
+	help := "/命令 Tab 补全 · Tab 面板 · ↑↓选帖 Enter详情 ←→翻页 · Ctrl+G×2 到底 · 滚轮 · Esc暂停 · /help"
 	if narrow {
-		help = "↑↓选帖 Enter详情 · Ctrl+G×2 到底 · Tab · Esc暂停 · /help"
+		help = "/命令 Tab 补全 · ↑↓选帖 · Tab 面板 · Esc暂停 · /help"
 	}
-	return m.overlayModal(paintAccent(header) + "\n" + panels + "\n" + paintMuted(fitLine(help, m.width)) + "\n" + m.input.View())
+	body := paintAccent(header) + "\n" + panels + "\n" + paintMuted(fitLine(help, m.width))
+	if suggestions := m.suggestionLines(m.width); len(suggestions) > 0 {
+		body += "\n" + strings.Join(suggestions, "\n")
+	}
+	return m.overlayModal(body + "\n" + m.input.View())
 }
 func max(a, b int) int {
 	if a > b {

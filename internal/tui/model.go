@@ -63,6 +63,9 @@ type Model struct {
 	gate                                                               *schedule.Gate
 	orchestrator                                                       *orchestrator.Runner
 	quotaRefresh                                                       func()
+	// slash-command completion
+	suggestions []commandSpec
+	suggestIndex int
 }
 
 type operationEvent struct {
@@ -334,6 +337,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
+	m.refreshSuggestions()
 	return m, cmd
 }
 func (m *Model) handleKey(key tea.KeyMsg) (tea.Cmd, bool) {
@@ -350,6 +354,25 @@ func (m *Model) handleKey(key tea.KeyMsg) (tea.Cmd, bool) {
 	if key.String() != "esc" && key.String() != "ctrl+[" {
 		m.escapeArmed = false
 	}
+	// The completion menu owns Tab/↑↓/Esc while it is visible.
+	if len(m.suggestions) > 0 {
+		switch key.String() {
+		case "tab":
+			if m.acceptSuggestion() {
+				return nil, true
+			}
+		case "up", "shift+tab":
+			m.suggestIndex = (m.suggestIndex - 1 + len(m.suggestions)) % len(m.suggestions)
+			return nil, true
+		case "down":
+			m.suggestIndex = (m.suggestIndex + 1) % len(m.suggestions)
+			return nil, true
+		case "esc", "ctrl+[":
+			m.suggestions = nil
+			return nil, true
+		}
+	}
+
 	switch key.String() {
 	case "ctrl+c":
 		if m.busy {
