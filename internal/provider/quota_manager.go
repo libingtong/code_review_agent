@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"math"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -306,8 +306,10 @@ func (p *Pool) ListModels(ctx context.Context, id string) ([]string, error) {
 
 func parseModelList(body []byte) ([]string, error) {
 	var envelope struct {
-		Data   []struct{ ID string `json:"id"` } `json:"data"`
-		Models []string                          `json:"models"`
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+		Models []string `json:"models"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
 		// Some gateways answer with a bare array of names or objects.
@@ -315,7 +317,9 @@ func parseModelList(body []byte) ([]string, error) {
 		if jsonErr := json.Unmarshal(body, &list); jsonErr == nil {
 			return list, nil
 		}
-		var objects []struct{ ID string `json:"id"` }
+		var objects []struct {
+			ID string `json:"id"`
+		}
 		if jsonErr := json.Unmarshal(body, &objects); jsonErr == nil {
 			for _, object := range objects {
 				list = append(list, object.ID)

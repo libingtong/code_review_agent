@@ -18,8 +18,8 @@ type concurrencyState struct {
 }
 
 type concurrencyFile struct {
-	Version   int                `json:"version"`
-	SavedAt   time.Time          `json:"saved_at"`
+	Version  int                `json:"version"`
+	SavedAt  time.Time          `json:"saved_at"`
 	Channels []concurrencyState `json:"channels"`
 }
 
