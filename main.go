@@ -126,9 +126,12 @@ func printCheck(cfg config.Config, pool *provider.Pool, gate *schedule.Gate, tas
 		if sample.Plan != "" {
 			plan = " plan=" + sample.Plan
 		}
+		reset := "—"
+		if !sample.ResetAt.IsZero() {
+			reset = sample.ResetAt.Local().Format(time.RFC3339)
+		}
 		fmt.Printf("  探针 %s：used=%s total=%s%s reset=%s raw=%d bytes\n",
-			status.ID, provider.FormatUnits(sample.Used), provider.FormatUnits(sample.Total), plan,
-			sample.ResetAt.Local().Format(time.RFC3339), len(raw))
+			status.ID, provider.FormatUnits(sample.Used), provider.FormatUnits(sample.Total), plan, reset, len(raw))
 	}
 	fmt.Printf("时间窗：%s\n", gate.Describe())
 	decision := gate.Check()
