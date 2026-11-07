@@ -11,24 +11,49 @@ https://github.com/huoji120/QWEN-EXO-booster
 4. 超大型项目实战,已经过大型项目测试,本项目为超大型项目审计而生.在内部大型项目,V8引擎项目中发现了许多致命/非致命漏洞.在2026年年初的V8中,发现了ppc/s390，CmpS32>CmpU64，perf-jit 跨脚本内联 UAF，js-objects属性!=/== 反转 等一系列高危安全问题。
 5. 非常简单,简洁,易用,效果非常足,好不好用,自己用一下.
 
-# 多源订阅与无人值守（本分支新增）
+# 多源订阅与无人值守
 
 一份订阅跑不完大项目，两份又不想盯着。这一版把"用哪份订阅、什么时候跑、跑什么"都交给程序：
 
 | 能力 | 一句话 | 配置/命令 |
 | --- | --- | --- |
 | 多源池 | GLM 与 MiniMax 同时接入，按 5 小时窗口余量自动分配 | `providers[]` |
-| 5H 余量探测 | 主动探针 + 官方 CLI + 本地计量 + 429 被动信号，四层兜底，探针挂了不停审计 | `/quota`、`-check` |
+| 5H 余量探测 | http 探针 + 官方 CLI + 本地计量 + 429 被动信号，四层兜底，**探针挂了不停审计** | `/quota`、`-check` |
 | 渠道与套餐 | 额度是**渠道**属性：同厂商多个 key/套餐各算各的，`plan` 决定容量档位 | `vendor`、`plan` |
 | 自设用量上限 | 只用窗口的 90%，剩下留给 Claude Code 等其它工具；到上限自动换源 | `max_usage_ratio`、`/limit` |
 | 自动换源 | 余量不足才切（默认 15% 阈值 + 5 分钟驻留），保护 97%+ 缓存命中 | `routing` |
-| 并发自适应 | 频繁 429 说明并发过高：该源并发减半，成功后再逐步加回 | `concurrency` |
+| 并发自适应 | 频繁 429 说明并发过高：该源并发减半，连续成功后再逐步回升 | `concurrency` |
+| 并发记忆 | 稳定后的并发写盘，**下次启动直接沿用**，不再重复撞 429 | `/concurrency`、`state/concurrency.json` |
 | 工作时间段 | 全局一套窗口，渠道可覆盖（例如 GLM 全天、MiniMax 只在夜里） | `schedule`、`/window` |
 | 任务编排 | 一批目录/任务导入后串行跑完，断点续跑，每任务独立报告 | `/tasks` |
-| 非交互自检 | 不进 TUI 就能看源、余量、时段、队列 | `-check` |
+| 非交互自检 | 不进 TUI 就能看渠道、余量、**端点可用模型名**、时段、队列 | `-check` |
+| 暂停可解释 | 暂停时写清是"时段外 / 冷却中 / 自设上限 / 额度耗尽"，并列出每个渠道的原因 | 事件流、`/providers` |
 
-示例配置：`config.multi.yaml`（双源 + 时段 + 编排）；现成的 `config.yaml` 也已按"全局 `openai` 默认值 + `providers` 渠道列表"组织好。
-细节见下方「多源订阅管理」一节。
+示例配置：`config.multi.yaml`（双源 + 时段 + 编排）；`config.yaml` 是日常用的双渠道配置。
+每个渠道自带 endpoint / key / 模型，**没有全局默认值**（改模型只改一处，不会出现"到底继承了谁"的问题）。
+
+## 这一轮修掉的坑
+
+都是实际踩到、并且现在有回归测试守着的：
+
+| 之前的现象 | 原因 | 现在 |
+| --- | --- | --- |
+| 明明有额度却报「所有源余量均不足」 | 失败请求也被计入额度，凭空开启了一个 5h 窗口 | 用量先暂存，**请求成功才提交** |
+| 一旦被判耗尽就永远不恢复 | 窗口滚动要求"已记录用量"，未记账的隔离永不失效 | 只按 `resetAt` 滚动，到期即恢复 |
+| 单次 402 锁死渠道 5 小时 | 无 reset hint 也按整个窗口判死 | 只做 **5 分钟冷却**，探针/下次请求再判断 |
+| 重启后并发又回到 4，重新撞 429 | 学习值只在内存 | 稳定值落盘，启动即用（`concurrency.learn` / `pin`） |
+| 「找不到模型」无法自查 | 模型名写错只能靠猜 | `-check` 直接向端点要 `/models` 并列出可用名 |
+| 切换渠道后请求 400 | `previous_response_id` 是厂商私有的 | 跨渠道自动丢弃续接、改发完整历史 |
+| 池内偶发卡死 | 持写锁时又去 `RLock` 时钟 | 持锁路径改用无锁辅助函数 |
+| 64k 上下文的渠道配置报错 | 压缩预留按 1M 上下文写死 | 预留按 `(context-output)/2` 自动推导 |
+| 暂停只说"全部不可用" | 错误信息硬编码成额度问题 | 逐渠道列出原因（时段外/冷却/自设上限/停用及原因） |
+| 没配 key 的渠道让程序起不来 | 无 key 也参与路由 | 自动停用并记录原因，其余渠道照常 |
+
+## 文档
+
+- 使用：[README](README.md)（本文）、[RUNNING.md](RUNNING.md)
+- 深度：[docs/architecture.md](docs/architecture.md)、[docs/providers.md](docs/providers.md)、[docs/schedule.md](docs/schedule.md)、[docs/orchestration.md](docs/orchestration.md)、[docs/configuration.md](docs/configuration.md)、[docs/troubleshooting.md](docs/troubleshooting.md)
+- 开发：[AGENTS.md](AGENTS.md)（仓库地图与不变量）、[docs/development.md](docs/development.md)
 
 # 分支规则
 
@@ -283,6 +308,23 @@ concurrency:
 
 限的是**在飞请求数**，不是 Agent 进程数：Agent 在等槽位时上下文完好，不丢工作。变化会以事件形式出现在运行日志里（`glm 并发 4 → 2（429 限流，降低并发）`），`/providers` 与 `-check` 也能看到 `并发 x/y · 在飞 n · 429 次数`。
 
+#### 稳定后记住并发（不用每次重新试探）
+
+只要并发在一段时间内没被限流、也没向上调整，就认为它稳定了，把值记下来：
+
+```yaml
+concurrency:
+  learn: true               # 默认开
+  pin: false                # true = 固定在学习值，只降不升
+  settle_successes: 40      # 连续 40 次成功算稳定
+  state_file: state/concurrency.json
+```
+
+- 下次启动**直接用学习值起步**（仍受 min/max 夹紧），不会又从 4 开始；
+- 429 依然会减半；减半后重新稳定，学习值更新成更低的值；
+- `pin: true` 适合"套餐并发很紧、只求不抖"的场景：以学习值为上限，不再增长；
+- 查看/清除：`/concurrency`、`/concurrency reset glm`；事件流会提示 `glm 并发稳定在 3，已记住（下次启动即用）`。
+
 ### 4. 工作时间段
 
 ```yaml
@@ -365,9 +407,10 @@ tasks:
 | `/quota [ID]` | 余量与恢复时间；带 ID 时刷新并显示原始响应 |
 | `/window` | 时段编辑器（多窗口、按周几、持久化）；`/window off|on|22:00-06:00 mon-fri` 直改 |
 | `/limit` | 自设用量上限：`/limit glm 90%`、`reserve 500`、`off` |
+| `/concurrency` | 各渠道当前/学习并发、429 次数；`/concurrency reset [ID]` 清除学习值 |
 | `/tasks ...` | 导入 / 运行 / 停止 / 跳过 / 重试任务队列 |
 | `/window <渠道> ...` | 渠道级时段：`glm always` / `glm inherit` / `glm 21:00-02:00 mon-fri` |
-| `-check` | 非交互自检：源、余量（含接口报告的档位）、时段状态、任务队列 |
+| `-check` | 非交互自检：渠道、余量（含接口档位）、**端点可用模型名**、时段、任务队列 |
 
 > 说明：GLM Coding Plan 的条款限定"仅在官方指定工具中使用"，自建程序调用可能触发限流或权益限制。程序把每个源都当作普通 OpenAI 兼容端点，随时可以换成标准 API key（改 `base_url`/`api_key_env`，不动代码）。
 
@@ -380,6 +423,7 @@ tasks:
 | `state/quota.json` | 各渠道 5 小时窗口的消耗与重置时间 | 重启会把半个窗口当成满额，可能短暂超用 |
 | `state/limits.json` | `/limit` 设的自设用量上限 | 回到配置文件里的值 |
 | `state/schedule.json` | `/window` 改的全局时段与渠道覆盖 | 回到配置文件里的时段 |
+| `state/concurrency.json` | 各渠道"稳定并发"学习值 | 下次启动从 `initial_in_flight` 重新试探 |
 | `sessions/tasks/<ID>.json` | 任务断点 | 该任务从头开始 |
 | `reports/<ID>/report.{json,md}` | 每任务产出 | 需重新导出 |
 
@@ -390,6 +434,8 @@ tasks:
 - **429 的处理顺序**是：降并发 → 换源 → 退避重试 → 并发到底仍 429 才判定额度问题并暂停。所以看到"变慢"通常是在降并发，不是卡住。
 - **额度与时段是两套刹车**：余量不够会换源/暂停；时段之外直接不选该渠道。两者都会写入运行事件，便于回溯。
 - **敏感信息只走 env**：`api_key_env` + `.env`（`run.sh` 会自动 source），不要写进 `config.yaml` 提交。
+- **暂停原因会写明是哪一种刹车**：`时段外`（工作时段）/`冷却至 HH:MM`（429 或未确认欠费）/`已达自设上限`（`/limit`）/`额度耗尽`（探针确认或厂商给了重置时间），不再笼统说"全部不可用"。
+- **`/export` 默认写当前目录的 `report.json`**，它与 `reports/`、`sessions/`、`state/` 一起被 `.gitignore` 排除，不会误提交。
 
 ## 技术报告
 具体技术细节和技术报告,我会在[key08.com](https://key08.com/)发布,尽请关注.
