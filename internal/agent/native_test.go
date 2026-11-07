@@ -502,7 +502,7 @@ func TestForumNudgeInjectedOnce(t *testing.T) {
 // A continuation suffix that only carries tool results leaves the request with no
 // text; MiniMax answers 400 "chat content is empty". Such a turn must send the
 // full history instead.
-func TestContinuationSkippedWhenSuffixHasOnlyToolResults(t *testing.T) {
+func TestContinuationExtendsSuffixToText(t *testing.T) {
 	team := newTestTeam(t, nil)
 	defer team.Close()
 	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-1", phaseAudit, team.board)
@@ -518,8 +518,12 @@ func TestContinuationSkippedWhenSuffixHasOnlyToolResults(t *testing.T) {
 	a.responseMessageIndex = 3 // suffix = only the tool output
 
 	ctx := a.responsesRequestContext(context.Background())
-	if _, ok := llm.ResponsesContinuationFrom(ctx); ok {
-		t.Fatal("continuation must be dropped when the suffix has no text item")
+	continuation, ok := llm.ResponsesContinuationFrom(ctx)
+	if !ok {
+		t.Fatal("continuation should be kept by pulling a text item into the suffix")
+	}
+	if len(continuation.Messages) != 3 || continuation.Messages[0].Content != "开始" {
+		t.Fatalf("suffix should start at the nearest text message: %+v", continuation.Messages)
 	}
 
 	// With a text item in the suffix the optimisation stays enabled.

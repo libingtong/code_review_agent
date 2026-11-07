@@ -39,12 +39,22 @@ func (a *Agent) responsesRequestContext(ctx context.Context) context.Context {
 		a.invalidateResponseContinuation()
 		return ctx
 	}
-	suffix := a.messages[a.responseMessageIndex:]
+	start := a.responseMessageIndex
+	suffix := a.messages[start:]
 	if !hasTextItem(suffix) {
-		// A suffix made only of tool results leaves the request with no text at all;
-		// providers such as MiniMax reject it ("chat content is empty"). Fall back to
-		// the full history for this turn.
-		return ctx
+		// A suffix made only of tool results leaves the request with no text at all
+		// (MiniMax rejects it: "chat content is empty"). Pull the nearest preceding
+		// text message back into the suffix instead of resending everything.
+		for index := start - 1; index >= 0; index-- {
+			if hasTextItem(a.messages[index : index+1]) {
+				start = index
+				suffix = a.messages[start:]
+				break
+			}
+		}
+		if !hasTextItem(suffix) {
+			return ctx
+		}
 	}
 	return llm.WithResponsesContinuation(ctx, a.responseID, suffix)
 }
