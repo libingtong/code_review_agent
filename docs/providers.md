@@ -155,6 +155,18 @@ concurrency:
 
 降级只影响"怎么把历史讲给模型听"，工具本身仍走原生调用；`-check` 的「工具」行仍会显示原生工具是否可用。
 
+### 历史回放：`history: auto | native | text`
+
+Responses 协议要求把上一轮的 `function_call` / `function_call_output` 原样放回 `input`。GLM 的实现对此不稳定，会以 `invalid_request messages 参数非法` 或 `response.failed` 拒绝，于是：
+
+| 配置 | 行为 | 适用 |
+| --- | --- | --- |
+| `auto`（默认） | 先发原生历史；被拒时**同回合**降级重发一次，并把该渠道切成文本历史 | MiniMax（接受续接与原生回放） |
+| `native` | 永远发原生历史，不降级 | 确定兼容的端点 |
+| `text` | **从第一个请求起**就把工具历史转成纯文本（`[上一回合调用工具 X，参数 …]` / `[工具结果] …`） | GLM（实测反复拒绝原生回放） |
+
+文本历史只影响"模型怎么读到历史"，工具调用本身仍是原生 `function_call`；`-check` 的「工具」行照样是 `原生 function_call OK`。当前 `config.yaml` 里 GLM 已设为 `history: text`。
+
 ### 语言模型的"自觉"不靠谱：`instructions` 强指令
 
 实测结论（两家都测过）：

@@ -56,6 +56,31 @@ type OpenAIConfig struct {
 	Stream           bool            `yaml:"stream"`
 	Thinking         *ThinkingConfig `yaml:"thinking"`
 	ReasoningEffort  string          `yaml:"reasoning_effort"`
+	// History selects how tool traffic is replayed on the Responses protocol:
+	// "auto" (native items, degrade on rejection), "native" (always native) or
+	// "text" (always plain text). GLM's Responses endpoint rejects native replays
+	// often enough that "text" is the reliable setting for it.
+	History string `yaml:"history"`
+}
+
+// HistoryMode normalises the history replay setting.
+func (c OpenAIConfig) HistoryMode() string {
+	switch strings.ToLower(strings.TrimSpace(c.History)) {
+	case "text", "plain":
+		return "text"
+	case "native":
+		return "native"
+	default:
+		return "auto"
+	}
+}
+
+func validateHistory(cfg OpenAIConfig, section string) error {
+	switch cfg.HistoryMode() {
+	case "auto", "native", "text":
+		return nil
+	}
+	return fmt.Errorf("%s.history must be auto, native or text", section)
 }
 
 type ThinkingConfig struct {

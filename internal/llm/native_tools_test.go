@@ -583,3 +583,38 @@ func TestStreamedHistoryRejectionRetriesSameTurn(t *testing.T) {
 		t.Fatalf("retry should use text history: %s", mustJSON(requests[1]["input"]))
 	}
 }
+
+// history: text must skip native replays from the very first request.
+func TestTextHistoryModeNeverReplaysNativeItems(t *testing.T) {
+	var bodies []map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","status":"completed","output":[{"type":"function_call","call_id":"c1","name":"noop","arguments":"{}"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(config.OpenAIConfig{BaseURL: server.URL, APIKey: "k", Model: "m", APIInterface: "responses",
+		MaxContextTokens: 1000, MaxOutputTokens: 100, TopP: 1, TimeoutSeconds: 5, Stream: false, History: "text"})
+	tools := []ToolDefinition{{Type: "function", Name: "noop", Description: "x", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	history := []Message{
+		{Role: RoleUser, Content: "看文件"},
+		{Type: "function_call", CallID: "c1", Name: "noop", Arguments: "{}"},
+		{Type: "function_call_output", CallID: "c1", Content: `{"ok":true}`},
+	}
+	if _, err := client.ChatTools(context.Background(), history, tools, func(Delta) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(bodies) != 1 {
+		t.Fatalf("requests = %d, want 1 (no retry needed)", len(bodies))
+	}
+	input := mustJSON(bodies[0]["input"])
+	if strings.Contains(input, `"type":"function_call"`) || strings.Contains(input, `"type":"function_call_output"`) {
+		t.Fatalf("text history mode still replayed native items: %s", input)
+	}
+	if !strings.Contains(input, "上一回合调用工具") {
+		t.Fatalf("degraded text missing: %s", input)
+	}
+}

@@ -38,6 +38,9 @@ providers:
       # GLM 的 Responses 端点；也支持 /api/coding/paas/v4 的 Chat Completions。
       # 注意：GLM 会返回 response id 但拒绝 previous_response_id，客户端会自动降级为全量历史。
       api_interface: responses
+      # GLM 反复以 invalid_request 拒绝回放 function_call 历史，因此固定用文本历史
+      # （工具结果以文字形式回放，模型仍用原生 function call 调用工具）。
+      history: text
       base_url: https://open.bigmodel.cn/api/v1
       api_key: ""
       api_key_env: GLM_API_KEY
@@ -110,12 +113,12 @@ schedule:
 
 # 诊断日志：默认关闭。排查厂商协议差异时打开，并把 llm_dump 打开即可拿到失败请求
 logging:
-  enabled: true
+  enabled: false
   level: info            # debug | info | warn | error | off
   dir: logs
   max_size_mb: 32
   keep_files: 5
-  llm_dump: false        # true = 失败请求的完整（已脱敏）payload 落到 logs/dumps/
+  llm_dump: true        # true = 失败请求的完整（已脱敏）payload 落到 logs/dumps/
 
 orchestrator:
   enabled: true

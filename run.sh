@@ -25,5 +25,6 @@ if [[ -z "${MINIMAX_API_KEY:-}" ]]; then
   echo "      在 .env 中写入 MINIMAX_API_KEY=sk-... 后重新运行即可。" >&2
 fi
 
-go build -o code-review-agent .
+VERSION="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"
+go build -ldflags "-X main.buildVersion=${VERSION}" -o code-review-agent .
 exec ./code-review-agent "$@"

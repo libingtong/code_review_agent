@@ -22,13 +22,21 @@ import (
 	"code-review-agent/internal/tui"
 )
 
+// buildVersion is injected by run.sh (-ldflags "-X main.buildVersion=...").
+var buildVersion = "dev"
+
 func main() {
 	defer paniclog.RecoverWithContext("main")
 
 	cfgPath := flag.String("config", "config.yaml", "config file path")
 	auditDir := flag.String("dir", "", "directory to audit")
 	check := flag.Bool("check", false, "print provider/quota/schedule/queue status and exit")
+	version := flag.Bool("version", false, "print build version and exit")
 	flag.Parse()
+	if *version {
+		fmt.Printf("code-review-agent %s\n", buildVersion)
+		return
+	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {

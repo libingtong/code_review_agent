@@ -29,8 +29,10 @@ providers:
       # GLM Coding Plan 的 OpenAI Chat Completions 端点
       # （Responses 协议用 https://open.bigmodel.cn/api/v1）
       base_url: https://open.bigmodel.cn/api/v1
-      # GLM 支持 Responses；但它拒绝 previous_response_id，客户端会自动降级
+      # GLM 支持 Responses；但它拒绝 previous_response_id，也不稳定接受原生工具历史回放，
+      # 所以固定用文本历史（工具调用仍是原生 function call）
       api_interface: responses
+      history: text
       api_key: ""
       api_key_env: GLM_API_KEY
       model: glm-5.3

@@ -391,6 +391,14 @@ func (c *OpenAIClient) ChatStream(ctx context.Context, messages []Message, emit 
 }
 
 func NewOpenAIClient(cfg config.OpenAIConfig) *OpenAIClient {
+	client := newOpenAIClient(cfg)
+	if cfg.HistoryMode() == "text" {
+		client.useTextHistory()
+	}
+	return client
+}
+
+func newOpenAIClient(cfg config.OpenAIConfig) *OpenAIClient {
 	return &OpenAIClient{
 		cfg:        cfg,
 		httpClient: &http.Client{Timeout: time.Duration(cfg.TimeoutSeconds) * time.Second},
