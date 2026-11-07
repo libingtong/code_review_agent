@@ -1,17 +1,34 @@
-*.json
-config_ds.yaml
-config_duckgpt.yaml
-config_gpt.yaml
-config_ds.yaml
-code-review-agent.exe
-config_grok.yaml
+# ---- 构建产物 ----
 /code-review-agent
+code-review-agent.exe
 .gocache/
 .gopath/
 .gotmp/
+
+# ---- 密钥与本地配置 ----
 .env
-sessions/
-# 运行态目录只忽略仓库根下的，别误伤 internal/orchestrator 这类源码目录
+config_ds.yaml
+config_duckgpt.yaml
+config_gpt.yaml
+config_grok.yaml
+
+# ---- 生成物：审计报告与运行结果一律不入库 ----
+# 报告/结果 JSON：/export 默认写 report.json，编排器写 reports/<ID>/report.json
+*.json
+# 测试用的 JSON 夹具仍然要能进仓库
+!internal/**/testdata/**/*.json
+report.json
+x.json
+/*审计报告*.md
+/*审计证据索引*
+/deliverables/
+/reports/
+
+# ---- 运行态（可重建；锚定到仓库根，避免误伤 internal/* 源码目录）----
+/sessions/
+/log_sessions/
 /state/
 /orchestrator/
-/reports/
+
+# ---- 抓包/临时二进制 ----
+*.bin
