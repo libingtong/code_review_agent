@@ -452,6 +452,32 @@ func TestResponsesContinuationIsKeptWhenSupported(t *testing.T) {
 	}
 }
 
+// MiniMax ignores tool_choice:"required"; the per-request instructions directive
+// is what actually forces a native call there.
+func TestResponsesToolsSendToolDirective(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","status":"completed","output":[{"type":"function_call","call_id":"c1","name":"noop","arguments":"{}"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(config.OpenAIConfig{BaseURL: server.URL, APIKey: "k", Model: "m", APIInterface: "responses",
+		MaxContextTokens: 1000, MaxOutputTokens: 100, TopP: 1, TimeoutSeconds: 5, Stream: false})
+	tools := []ToolDefinition{{Type: "function", Name: "noop", Description: "x", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	if _, err := client.ChatTools(context.Background(), []Message{{Role: RoleUser, Content: "hi"}}, tools, func(Delta) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	instructions, _ := body["instructions"].(string)
+	if !strings.Contains(instructions, "禁止只用文字回答") {
+		t.Fatalf("tool directive missing: %q", instructions)
+	}
+	if choice, _ := body["tool_choice"].(string); choice != "required" {
+		t.Fatalf("tool_choice = %q", choice)
+	}
+}
+
 // Some Responses endpoints accept tools but reject the replayed function_call
 // items with "invalid_request ... messages". The client must retry once with a
 // text-degraded history and remember the mode for later turns.

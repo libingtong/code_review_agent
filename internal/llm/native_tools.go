@@ -47,6 +47,10 @@ func validateCalls(calls []FunctionCall) error {
 
 // A locally corrupted checkpoint is not a model response failure: do not retry it
 // as though a new model output could repair the already-persisted call lineage.
+// ValidateToolHistory exposes the replay validator: tests and diagnostics use it
+// to catch history shapes a provider would reject.
+func ValidateToolHistory(messages []Message) error { return validateToolHistory(messages) }
+
 func validateToolHistory(messages []Message) error {
 	pending := map[string]bool{}
 	seen := map[string]bool{}
@@ -247,6 +251,13 @@ func readNativeBody(body io.Reader, textLimit int) ([]byte, error) {
 	return data, nil
 }
 
+// toolDirective rides on every tool-bearing Responses request as `instructions`.
+// Some providers (MiniMax) ignore tool_choice:"required" and answer in prose; a
+// per-request system directive is the only enforcement that survived testing.
+const toolDirective = "本回合必须通过原生 function call 调用工具来推进任务，禁止只用文字回答。" +
+	"如果当前没有明确要执行的动作，也必须调用一个最相关的只读工具（例如 review_state 或 read_file）继续工作。" +
+	"每次调用必须提供完整 JSON 对象参数，不要输出 XML/DSML，也不要把工具调用写成文字或代码块。"
+
 func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, tools []ToolDefinition, emit func(Delta) error) (ToolResponse, error) {
 	previousResponseID, requestMessages := responsesContinuationInput(ctx, messages)
 	if !c.continuationEnabled() {
@@ -256,6 +267,7 @@ func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, t
 		Model              string                 `json:"model"`
 		Input              []any                  `json:"input"`
 		PreviousResponseID string                 `json:"previous_response_id,omitempty"`
+		Instructions       string                 `json:"instructions,omitempty"`
 		Tools              []ToolDefinition       `json:"tools"`
 		ToolChoice         string                 `json:"tool_choice"`
 		ParallelToolCalls  bool                   `json:"parallel_tool_calls"`
@@ -267,7 +279,8 @@ func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, t
 		Reasoning          *reasoningOptions      `json:"reasoning,omitempty"`
 	}{
 		Model: c.cfg.Model, Input: c.responsesHistoryInput(requestMessages), PreviousResponseID: previousResponseID,
-		Tools: tools, ToolChoice: "required", ParallelToolCalls: false, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP,
+		Instructions: toolDirective,
+		Tools:        tools, ToolChoice: "required", ParallelToolCalls: false, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP,
 		MaxOutputTokens: c.cfg.MaxOutputTokens, Stream: c.cfg.Stream, Thinking: c.cfg.Thinking, Reasoning: c.responseReasoning(),
 	}
 	progress, err := newGenerationTracker(ctx, emit)

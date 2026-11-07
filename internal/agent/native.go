@@ -118,12 +118,12 @@ func validateNativeResponse(response llm.ToolResponse, history []llm.Message) er
 	return nil
 }
 
-// recordSkippedCalls keeps history valid when the provider returns several
-// parallel calls: the first is executed, the rest get an explicit "not executed"
-// output so the next turn sees a complete call/output pair for every call_id.
-func (a *Agent) recordSkippedCalls(calls []llm.FunctionCall, reason string) {
+// recordSkippedOutputs acknowledges calls that were not executed this turn.
+// The call items themselves were already recorded by recordResponse; adding them
+// again would duplicate a call_id in history and make every later request fail
+// with "native history duplicates call_id".
+func (a *Agent) recordSkippedOutputs(calls []llm.FunctionCall, reason string) {
 	for _, call := range calls {
-		a.addMessage(llm.Message{Type: "function_call", ID: call.ID, CallID: call.CallID, Name: call.Name, Arguments: call.Arguments})
 		a.rejectTool(call, reason)
 	}
 }

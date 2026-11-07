@@ -17,6 +17,7 @@
 | `所有源余量均不足：minimax: 时段外` | 不是额度问题，是工作时间段把它关了 | `/window mm always` 或 `/window off`；`-check` 的「时间窗」一行会显示每个渠道的开/关 |
 | `所有启用源均在限流冷却中，稍后自动重试` | 429 触发降档，或单次欠费被 `park` 5 分钟 | 等冷却；`/providers` 看 `并发 x/y · 429 次数`，必要时调 `concurrency` |
 | `请求已完成但没有原生工具调用（回答 N 字节…）` | 模型用文字回答而没有发 `function_call`；chat 协议缺 `tool_choice` 时常见 | 已在协议层强制 `tool_choice: "required"`；若仍出现，`-check` 的「工具」行会显示该模型是否支持工具调用，据此换模型或改 `api_interface: responses` |
+| `请求已完成但没有原生工具调用`（尤其 MiniMax） | 该端点忽略 `tool_choice:"required"`，模型改回文字回答 | 已在每个工具请求里附带 `instructions` 强指令（实测 MiniMax 6/6 生效）；若仍出现，`-check` 的「工具」行确认能力，并开 `logging.llm_dump` 看原始响应 |
 | `模型返回 N 个原生工具调用；每回合只允许一个` | 厂商返回并行调用；旧实现整批丢弃 | 现在执行第一个、其余标记跳过；若频繁出现可把 `parallel_tool_calls` 关掉（已默认关，部分厂商忽略） |
 | `invalid_request messages 参数非法` / `response.failed` | 端点拒绝回放 `function_call` 历史项 | 客户端自动降级为文本历史并记住该渠道；同一请求失败一次后不再复现 |
 | 频繁 429，变慢 | 团队并发 > 套餐允许 | 正常行为：并发减半后逐步回升；想更保守可把 `concurrency.initial_in_flight` 调小 |

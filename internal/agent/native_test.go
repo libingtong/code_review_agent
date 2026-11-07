@@ -222,8 +222,8 @@ func TestNativeResultsTraceRestoreAndCompressionPreserveEvidence(t *testing.T) {
 }
 
 // Providers may return several parallel calls in one turn. The batch is no
-// longer fatal: the first executes, the rest get an explicit skip output so the
-// history keeps a call/output pair for every call_id.
+// longer fatal: recordResponse stores every call once, and unexecuted calls get
+// only an output — duplicating the call item would poison history.
 func TestMultipleNativeCallsAreAcceptedWithSkips(t *testing.T) {
 	response := llm.ToolResponse{Calls: []llm.FunctionCall{
 		{CallID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`},
@@ -238,20 +238,33 @@ func TestMultipleNativeCallsAreAcceptedWithSkips(t *testing.T) {
 	defer team.Close()
 	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-9", phaseAudit, team.board)
 	defer a.tools.Close()
-	// The first call is executed by the turn loop; the remaining two are stubbed.
-	a.recordSkippedCalls(response.Calls[1:], "本回合只执行一个工具")
+	a.recordResponse(response)
+	// The first call is the one the turn would execute; the rest are acknowledged.
+	a.rejectTool(response.Calls[0], "已执行")
+	a.recordSkippedOutputs(response.Calls[1:], "本回合未执行")
 
 	callItems, outputItems := 0, 0
+	seen := map[string]int{}
 	for _, message := range a.messages {
 		switch message.Type {
 		case "function_call":
 			callItems++
+			seen[message.CallID]++
 		case "function_call_output":
 			outputItems++
 		}
 	}
-	if callItems != 2 || outputItems != 2 {
-		t.Fatalf("stub history incomplete: calls=%d outputs=%d", callItems, outputItems)
+	if callItems != 3 || outputItems != 3 {
+		t.Fatalf("history shape wrong: calls=%d outputs=%d", callItems, outputItems)
+	}
+	for id, count := range seen {
+		if count > 1 {
+			t.Fatalf("call_id %q recorded %d times (history would be rejected)", id, count)
+		}
+	}
+	// The exact validation that used to fail: replays must accept this history.
+	if err := llm.ValidateToolHistory(a.messages); err != nil {
+		t.Fatalf("history rejected by provider validation: %v", err)
 	}
 }
 
