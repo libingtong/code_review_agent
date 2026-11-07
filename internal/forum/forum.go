@@ -216,6 +216,7 @@ func (b *Board) post(agentID, stage, to string, replyTo int64, topic, content st
 	}
 	return m, nil
 }
+
 // HasPosted reports whether the agent already posted to this board.
 func (b *Board) HasPosted(agentID string) bool {
 	b.mu.Lock()

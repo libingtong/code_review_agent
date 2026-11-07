@@ -108,29 +108,29 @@ type PromptConfig struct {
 }
 
 type AgentConfig struct {
-	MaxTurns                 int     `yaml:"max_turns"`
-	SessionDir               string  `yaml:"session_dir"`
-	LogSession               bool    `yaml:"log_session"`
-	LogSessionDir            string  `yaml:"log_session_dir"`
-	RetryAttempts            int     `yaml:"retry_attempts"`
-	CompressAtRatio          float64 `yaml:"compress_at_ratio"`
-	CompressBufferTokens     int     `yaml:"compress_buffer_tokens"`
-	AutoPlan                 bool    `yaml:"auto_plan"`
-	MaxToolResultChars       int     `yaml:"max_tool_result_chars"`
-	MaxToolsPerTurn          int     `yaml:"max_tools_per_turn"`
-	MaxProtocolFailures      int     `yaml:"max_protocol_failures"`
+	MaxTurns             int     `yaml:"max_turns"`
+	SessionDir           string  `yaml:"session_dir"`
+	LogSession           bool    `yaml:"log_session"`
+	LogSessionDir        string  `yaml:"log_session_dir"`
+	RetryAttempts        int     `yaml:"retry_attempts"`
+	CompressAtRatio      float64 `yaml:"compress_at_ratio"`
+	CompressBufferTokens int     `yaml:"compress_buffer_tokens"`
+	AutoPlan             bool    `yaml:"auto_plan"`
+	MaxToolResultChars   int     `yaml:"max_tool_result_chars"`
+	MaxToolsPerTurn      int     `yaml:"max_tools_per_turn"`
+	MaxProtocolFailures  int     `yaml:"max_protocol_failures"`
 	// ModeratorIdleMinutes is the heartbeat for a moderator review when neither
 	// the forum nor the stage changed; ticks in between are skipped.
-	ModeratorIdleMinutes int `yaml:"moderator_idle_minutes"`
-	ReconAgents              int     `yaml:"recon_agents"`
-	AuditAgents              int     `yaml:"audit_agents"`
-	ForumWaitSeconds         int     `yaml:"forum_wait_seconds"`
-	ModeratorEnabled         *bool   `yaml:"moderator_enabled"`
-	ModeratorIntervalSeconds int     `yaml:"moderator_interval_seconds"`
-	InfiniteMode             bool    `yaml:"infinite_mode"`
-	BudgetHours              int     `yaml:"budget_hours"`
-	BudgetMinutes            int     `yaml:"budget_minutes"`
-	BudgetTokens             int64   `yaml:"budget_tokens"`
+	ModeratorIdleMinutes     int   `yaml:"moderator_idle_minutes"`
+	ReconAgents              int   `yaml:"recon_agents"`
+	AuditAgents              int   `yaml:"audit_agents"`
+	ForumWaitSeconds         int   `yaml:"forum_wait_seconds"`
+	ModeratorEnabled         *bool `yaml:"moderator_enabled"`
+	ModeratorIntervalSeconds int   `yaml:"moderator_interval_seconds"`
+	InfiniteMode             bool  `yaml:"infinite_mode"`
+	BudgetHours              int   `yaml:"budget_hours"`
+	BudgetMinutes            int   `yaml:"budget_minutes"`
+	BudgetTokens             int64 `yaml:"budget_tokens"`
 }
 
 // BudgetDuration keeps explicit zero as unlimited and rejects overflow before
