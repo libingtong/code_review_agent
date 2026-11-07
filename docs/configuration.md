@@ -45,7 +45,7 @@ agent: {...}            # 团队规模、预算、压缩、会话
 | `base_url` | vendor/plan 预设 | 例如 GLM `.../api/coding/paas/v4` |
 | `model` | vendor/plan 预设 | 名字错会报 `model_not_found`，用 `-check` 查可用值 |
 | `api_key` / `api_key_env` | 空 | 推荐 env；两者都空则该渠道会被跳过（除非所有渠道都没 key） |
-| `api_interface` | `chat` | `chat` 或 `responses` |
+| `api_interface` | `chat` | `chat` 或 `responses`；两家都支持 responses，GLM 不接受 `previous_response_id`（客户端自动降级） |
 | `thinking.type` | `enabled` | `enabled` / `adaptive` |
 | `reasoning_effort` | `high` | `low` / `high` / `max` |
 | `max_context_tokens` | 预设或必填 | 必须 > `max_output_tokens` |

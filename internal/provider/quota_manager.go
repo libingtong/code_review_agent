@@ -305,40 +305,60 @@ func (p *Pool) ListModels(ctx context.Context, id string) ([]string, error) {
 }
 
 func parseModelList(body []byte) ([]string, error) {
+	// Three shapes are in the wild: {"data":[{"id":...}]}, {"models":["..."]}
+	// and {"models":[{"display_name":"glm-5.3"}]} (GLM's Responses endpoint).
 	var envelope struct {
-		Data []struct {
-			ID string `json:"id"`
-		} `json:"data"`
-		Models []string `json:"models"`
+		Data   []map[string]any `json:"data"`
+		Models []any            `json:"models"`
 	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		// Some gateways answer with a bare array of names or objects.
-		var list []string
-		if jsonErr := json.Unmarshal(body, &list); jsonErr == nil {
-			return list, nil
+	if err := json.Unmarshal(body, &envelope); err == nil {
+		names := modelNames(envelope.Models)
+		names = append(names, modelNamesFromObjects(envelope.Data)...)
+		if len(names) > 0 {
+			return names, nil
 		}
-		var objects []struct {
-			ID string `json:"id"`
-		}
-		if jsonErr := json.Unmarshal(body, &objects); jsonErr == nil {
-			for _, object := range objects {
-				list = append(list, object.ID)
-			}
-			return list, nil
-		}
-		return nil, fmt.Errorf("无法解析模型列表：%s", snippet(string(body), 160))
 	}
+	var raw []any
+	if err := json.Unmarshal(body, &raw); err == nil {
+		if names := modelNames(raw); len(names) > 0 {
+			return names, nil
+		}
+	}
+	return nil, fmt.Errorf("无法解析模型列表：%s", snippet(string(body), 160))
+}
+
+// modelNames extracts identifiers from a heterogeneous model array.
+func modelNames(list []any) []string {
 	var names []string
-	for _, entry := range envelope.Data {
-		if entry.ID != "" {
-			names = append(names, entry.ID)
+	for _, entry := range list {
+		switch typed := entry.(type) {
+		case string:
+			if typed != "" {
+				names = append(names, typed)
+			}
+		case map[string]any:
+			for _, key := range []string{"id", "name", "model", "display_name", "slug"} {
+				if value, ok := typed[key].(string); ok && value != "" {
+					names = append(names, value)
+					break
+				}
+			}
 		}
 	}
-	names = append(names, envelope.Models...)
-	if len(names) == 0 {
-		return nil, fmt.Errorf("端点返回了空的模型列表：%s", snippet(string(body), 160))
+	return names
+}
+
+func modelNamesFromObjects(list []map[string]any) []string {
+	out := make([]string, 0, len(list))
+	for _, entry := range list {
+		for _, key := range []string{"id", "name", "model", "display_name", "slug"} {
+			if value, ok := entry[key].(string); ok && value != "" {
+				out = append(out, value)
+				break
+			}
+		}
 	}
-	return names, nil
+	return out
 }
 
 // ProbeToolSupport reports whether a channel's model honours native function

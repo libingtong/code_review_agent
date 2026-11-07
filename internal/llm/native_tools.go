@@ -241,6 +241,9 @@ func readNativeBody(body io.Reader, textLimit int) ([]byte, error) {
 
 func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, tools []ToolDefinition, emit func(Delta) error) (ToolResponse, error) {
 	previousResponseID, requestMessages := responsesContinuationInput(ctx, messages)
+	if !c.continuationEnabled() {
+		previousResponseID = ""
+	}
 	payload := struct {
 		Model              string                 `json:"model"`
 		Input              []any                  `json:"input"`
@@ -266,6 +269,13 @@ func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, t
 	defer progress.flushPending()
 	progress.textLimit = nativeTextLimit(c.cfg.MaxOutputTokens)
 	resp, ctx, err := c.nativeRequest(ctx, "/responses", payload)
+	if err != nil && retryWithoutContinuation(c, err) {
+		// The endpoint hands out response ids but refuses previous_response_id
+		// (GLM's Responses API does this). Resend the full history once and stop
+		// asking for continuation from now on.
+		payload.PreviousResponseID = ""
+		resp, ctx, err = c.nativeRequest(ctx, "/responses", payload)
+	}
 	if err != nil {
 		return ToolResponse{}, err
 	}

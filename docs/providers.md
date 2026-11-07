@@ -129,6 +129,21 @@ concurrency:
 
 这个值属于**厂商/套餐**，与 5H 窗口无关，所以单独存一个文件。
 
+## 协议选择（chat vs responses）
+
+两个渠道都支持两种协议，实测结果：
+
+| 端点 | Chat Completions | Responses | `previous_response_id` |
+| --- | --- | --- | --- |
+| GLM | `https://open.bigmodel.cn/api/coding/paas/v4` | `https://open.bigmodel.cn/api/v1` | **不支持**（返回 `not_found`） |
+| MiniMax | `https://api.minimax.cn/v1` | 同 base 的 `/responses` | 支持 |
+
+推荐都用 `api_interface: responses`：原生 `tool_choice`、能拿到 reasoning 文本、按响应 id 记 lineage。
+
+- 续接是**能力协商**的：GLM 拒绝 `previous_response_id` 时，客户端丢弃 lineage、重发完整历史，
+  并记住该渠道不再发续接——所以切到 responses 不会让 GLM 每回合报 404；
+- 能力只在配置里声明协议，不需要额外开关；`-check` 会真实探测工具调用与模型名。
+
 ## 原生工具调用与工具能力自检
 
 agent 只走原生 function calling，所以协议层必须"逼"模型调工具，而不是等它自愿：

@@ -28,8 +28,9 @@ providers:
     openai:
       # GLM Coding Plan 的 OpenAI Chat Completions 端点
       # （Responses 协议用 https://open.bigmodel.cn/api/v1）
-      base_url: https://open.bigmodel.cn/api/coding/paas/v4
-      api_interface: chat
+      base_url: https://open.bigmodel.cn/api/v1
+      # GLM 支持 Responses；但它拒绝 previous_response_id，客户端会自动降级
+      api_interface: responses
       api_key: ""
       api_key_env: GLM_API_KEY
       model: glm-5.3
@@ -87,7 +88,7 @@ providers:
     weight: 2
     openai:
       base_url: https://api.minimax.cn/v1
-      api_interface: chat
+      api_interface: responses
       api_key: ""
       api_key_env: MINIMAX_API_KEY
       model: MiniMax-M3.1-Flash

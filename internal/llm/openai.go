@@ -155,6 +155,10 @@ type OpenAIClient struct {
 	// toolChoiceAuto is set when the endpoint rejects tool_choice:"required".
 	// The capability is remembered per channel to avoid a 400 on every turn.
 	toolChoiceAuto int32
+	// continuationUnsupported is set when the endpoint returns a response id but
+	// then refuses previous_response_id (GLM's Responses endpoint does this).
+	// Remembering it keeps every later turn from failing.
+	continuationUnsupported int32
 }
 
 const (
@@ -173,6 +177,49 @@ func (c *OpenAIClient) chatToolChoice() string {
 
 func (c *OpenAIClient) fellBackToolChoice() {
 	atomic.StoreInt32(&c.toolChoiceAuto, toolChoiceFellBack)
+}
+
+// continuationEnabled reports whether previous_response_id may be sent.
+func (c *OpenAIClient) continuationEnabled() bool {
+	return atomic.LoadInt32(&c.continuationUnsupported) == 0
+}
+
+func (c *OpenAIClient) disableContinuation() {
+	atomic.StoreInt32(&c.continuationUnsupported, 1)
+}
+
+// continuationRejected detects "previous_response_id ... not found" style errors.
+func continuationRejected(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	if !strings.Contains(text, "previous_response_id") {
+		return false
+	}
+	return strings.Contains(text, "not_found") || strings.Contains(text, "not found") ||
+		strings.Contains(text, "unknown") || strings.Contains(text, "invalid")
+}
+
+// readErrorBody consumes a failed response and turns it into the same
+// "openai status N: body" error the rest of the client uses.
+func readErrorBody(resp *http.Response) error {
+	body, err := readResponsesBody(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		return err
+	}
+	return fmt.Errorf("openai status %d: %s", resp.StatusCode, string(body))
+}
+
+// retryWithoutContinuation is the shared recovery path: forget the lineage and
+// resend the full history once.
+func retryWithoutContinuation(c *OpenAIClient, err error) bool {
+	if !continuationRejected(err) {
+		return false
+	}
+	c.disableContinuation()
+	return true
 }
 
 func (c *OpenAIClient) ChatStream(ctx context.Context, messages []Message, emit func(Delta) error) (resultErr error) {
@@ -525,20 +572,29 @@ func (c *OpenAIClient) endpoint(path string) string {
 
 func (c *OpenAIClient) responsesStream(ctx context.Context, messages []Message, emit func(Delta) error) error {
 	previousResponseID, requestMessages := responsesContinuationInput(ctx, messages)
-	reqBody := responsesRequest{Model: c.cfg.Model, Input: responsesInput(requestMessages), PreviousResponseID: previousResponseID, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP, MaxOutputTokens: c.cfg.MaxOutputTokens, Stream: true}
-	reqBody.Thinking, reqBody.Reasoning = c.cfg.Thinking, c.responseReasoning()
-	data, err := json.Marshal(reqBody)
-	if err != nil {
-		return err
+	if !c.continuationEnabled() {
+		previousResponseID = ""
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/responses"), bytes.NewReader(data))
-	if err != nil {
-		return err
+	build := func(previous string) (*http.Response, context.Context, error) {
+		reqBody := responsesRequest{Model: c.cfg.Model, Input: responsesInput(requestMessages), PreviousResponseID: previous, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP, MaxOutputTokens: c.cfg.MaxOutputTokens, Stream: true}
+		reqBody.Thinking, reqBody.Reasoning = c.cfg.Thinking, c.responseReasoning()
+		data, err := json.Marshal(reqBody)
+		if err != nil {
+			return nil, ctx, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/responses"), bytes.NewReader(data))
+		if err != nil {
+			return nil, ctx, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "text/event-stream")
+		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		return c.doStream(req)
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	resp, ctx, err := c.doStream(req)
+	resp, ctx, err := build(previousResponseID)
+	if err != nil && retryWithoutContinuation(c, err) {
+		resp, ctx, err = build("")
+	}
 	if err != nil {
 		return err
 	}
@@ -645,21 +701,39 @@ func (c *OpenAIClient) responsesStream(ctx context.Context, messages []Message, 
 
 func (c *OpenAIClient) responsesChat(ctx context.Context, messages []Message) (string, error) {
 	previousResponseID, requestMessages := responsesContinuationInput(ctx, messages)
-	reqBody := responsesRequest{Model: c.cfg.Model, Input: responsesInput(requestMessages), PreviousResponseID: previousResponseID, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP, MaxOutputTokens: c.cfg.MaxOutputTokens}
-	reqBody.Thinking, reqBody.Reasoning = c.cfg.Thinking, c.responseReasoning()
-	data, err := json.Marshal(reqBody)
+	if !c.continuationEnabled() {
+		previousResponseID = ""
+	}
+	build := func(previous string) (*http.Response, error) {
+		reqBody := responsesRequest{Model: c.cfg.Model, Input: responsesInput(requestMessages), PreviousResponseID: previous, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP, MaxOutputTokens: c.cfg.MaxOutputTokens}
+		reqBody.Thinking, reqBody.Reasoning = c.cfg.Thinking, c.responseReasoning()
+		data, err := json.Marshal(reqBody)
+		if err != nil {
+			return nil, err
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/responses"), bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
+		return c.httpClient.Do(req)
+	}
+	resp, err := build(previousResponseID)
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/responses"), bytes.NewReader(data))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return "", err
+	if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusBadRequest {
+		// Read the body to decide whether this is a continuation complaint.
+		bodyErr := readErrorBody(resp)
+		if retryWithoutContinuation(c, bodyErr) {
+			resp, err = build("")
+			if err != nil {
+				return "", err
+			}
+		} else if bodyErr != nil {
+			return "", bodyErr
+		}
 	}
 	defer resp.Body.Close()
 	body, err := readResponsesBody(resp.Body)

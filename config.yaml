@@ -11,7 +11,8 @@ providers:
     enabled: true
     weight: 2
     openai:
-      api_interface: chat
+      # MiniMax 也支持 Responses（/v1/responses）：原生 tool_choice + 续接
+      api_interface: responses
       base_url: https://api.minimax.cn/v1
       api_key: ""
       api_key_env: MINIMAX_API_KEY
@@ -34,8 +35,10 @@ providers:
     weight: 1
     openai:
       # 必须用「个人编程套餐」里新建的 key，与标准 API key 不通用
-      api_interface: chat
-      base_url: https://open.bigmodel.cn/api/coding/paas/v4
+      # GLM 的 Responses 端点；也支持 /api/coding/paas/v4 的 Chat Completions。
+      # 注意：GLM 会返回 response id 但拒绝 previous_response_id，客户端会自动降级为全量历史。
+      api_interface: responses
+      base_url: https://open.bigmodel.cn/api/v1
       api_key: ""
       api_key_env: GLM_API_KEY
       model: glm-5.3-flash           # 若报"找不到模型"，用 -check 查看该端点可用模型

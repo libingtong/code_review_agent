@@ -44,6 +44,7 @@ https://github.com/huoji120/QWEN-EXO-booster
 | 重启后并发又回到 4，重新撞 429 | 学习值只在内存 | 稳定值落盘，启动即用（`concurrency.learn` / `pin`） |
 | 「找不到模型」无法自查 | 模型名写错只能靠猜 | `-check` 直接向端点要 `/models` 并列出可用名 |
 | 「请求已完成但没有原生工具调用」 | chat 协议没发 `tool_choice`，模型改用文字回答 | 强制 `tool_choice: "required"`，端点不支持时自动回退 `auto` 并记住；`-check` 可探测工具能力 |
+| 切到 responses 后每回合 404 | GLM 会发 response id 但拒绝 `previous_response_id` | 客户端丢弃续接、重发完整历史并记住该能力（MiniMax 支持续接，不受影响） |
 | 切换渠道后请求 400 | `previous_response_id` 是厂商私有的 | 跨渠道自动丢弃续接、改发完整历史 |
 | 池内偶发卡死 | 持写锁时又去 `RLock` 时钟 | 持锁路径改用无锁辅助函数 |
 | 64k 上下文的渠道配置报错 | 压缩预留按 1M 上下文写死 | 预留按 `(context-output)/2` 自动推导 |
@@ -178,7 +179,8 @@ providers:
     vendor: glm                 # 端点、探测方式、抵扣系数由 vendor/plan 决定
     plan: glm-max               # 容量档位：2000 / 12000 / 28000 积分每 5 小时
     openai:
-      base_url: https://open.bigmodel.cn/api/coding/paas/v4
+      api_interface: responses
+      base_url: https://open.bigmodel.cn/api/v1
       api_key_env: GLM_API_KEY
       model: glm-5.3
       max_context_tokens: 200000

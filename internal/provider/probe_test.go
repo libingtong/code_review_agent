@@ -242,3 +242,25 @@ func TestRealTotalWinsOverLiteral(t *testing.T) {
 		t.Fatalf("literal overrode the real total: %v", sample.Total)
 	}
 }
+
+func TestParseModelListShapes(t *testing.T) {
+	cases := map[string][]string{
+		`{"data":[{"id":"a"},{"id":"b"}]}`:        {"a", "b"},
+		`{"models":["x","y"]}`:                    {"x", "y"},
+		`{"models":[{"display_name":"glm-5.3"}]}`: {"glm-5.3"},
+		`["p","q"]`:                           {"p", "q"},
+		`{"models":[{"slug":"glm-5-turbo"}]}`: {"glm-5-turbo"},
+	}
+	for body, want := range cases {
+		got, err := parseModelList([]byte(body))
+		if err != nil {
+			t.Fatalf("%s: %v", body, err)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("%s: got %v want %v", body, got, want)
+		}
+	}
+	if _, err := parseModelList([]byte(`{"unexpected":true}`)); err == nil {
+		t.Fatal("unparsable body must error")
+	}
+}

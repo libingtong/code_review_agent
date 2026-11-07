@@ -376,3 +376,78 @@ func TestProbeToolCallDetectsTextOnlyModel(t *testing.T) {
 		t.Fatalf("native call not detected: ok=%v err=%v", ok, err)
 	}
 }
+
+// GLM's Responses endpoint hands out ids but rejects previous_response_id. The
+// client must drop the lineage and resend once, then stop asking.
+func TestResponsesContinuationFallsBackWhenRejected(t *testing.T) {
+	var previous []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		prev, _ := body["previous_response_id"].(string)
+		previous = append(previous, prev)
+		if prev != "" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"previous_response_id not found"}}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_new","status":"completed","output":[{"type":"function_call","call_id":"c1","name":"noop","arguments":"{}"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(config.OpenAIConfig{BaseURL: server.URL, APIKey: "k", Model: "m", APIInterface: "responses",
+		MaxContextTokens: 1000, MaxOutputTokens: 100, TopP: 1, TimeoutSeconds: 5, Stream: false})
+	tools := []ToolDefinition{{Type: "function", Name: "noop", Description: "x", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	messages := []Message{{Role: RoleUser, Content: "hi"}}
+	ctx := WithResponsesContinuation(context.Background(), "resp_old", messages)
+
+	response, err := client.ChatTools(ctx, messages, tools, func(Delta) error { return nil })
+	if err != nil {
+		t.Fatalf("continuation rejection must be recoverable: %v", err)
+	}
+	if len(response.Calls) != 1 {
+		t.Fatalf("calls = %d", len(response.Calls))
+	}
+	// first attempt carried the id and was rejected, retry did not.
+	if len(previous) != 2 || previous[0] != "resp_old" || previous[1] != "" {
+		t.Fatalf("retry did not drop the continuation: %v", previous)
+	}
+
+	// The capability is remembered: a later turn does not send it at all.
+	if _, err := client.ChatTools(ctx, messages, tools, func(Delta) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if last := previous[len(previous)-1]; last != "" {
+		t.Fatalf("continuation still sent after fallback: %q", last)
+	}
+	if len(previous) != 3 {
+		t.Fatalf("unexpected request count: %v", previous)
+	}
+}
+
+// MiniMax honours previous_response_id, so the optimisation must stay enabled.
+func TestResponsesContinuationIsKeptWhenSupported(t *testing.T) {
+	var previous []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		prev, _ := body["previous_response_id"].(string)
+		previous = append(previous, prev)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_2","status":"completed","output":[{"type":"function_call","call_id":"c1","name":"noop","arguments":"{}"}]}`))
+	}))
+	defer server.Close()
+
+	client := NewOpenAIClient(config.OpenAIConfig{BaseURL: server.URL, APIKey: "k", Model: "m", APIInterface: "responses",
+		MaxContextTokens: 1000, MaxOutputTokens: 100, TopP: 1, TimeoutSeconds: 5, Stream: false})
+	tools := []ToolDefinition{{Type: "function", Name: "noop", Description: "x", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	messages := []Message{{Role: RoleUser, Content: "hi"}}
+	ctx := WithResponsesContinuation(context.Background(), "resp_1", messages)
+	if _, err := client.ChatTools(ctx, messages, tools, func(Delta) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if len(previous) != 1 || previous[0] != "resp_1" {
+		t.Fatalf("supported continuation must be sent: %v", previous)
+	}
+}
