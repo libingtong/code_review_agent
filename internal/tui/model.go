@@ -64,7 +64,7 @@ type Model struct {
 	orchestrator                                                       *orchestrator.Runner
 	quotaRefresh                                                       func()
 	// slash-command completion
-	suggestions []commandSpec
+	suggestions  []commandSpec
 	suggestIndex int
 }
 
