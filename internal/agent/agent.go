@@ -337,11 +337,13 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 		emit(Event{Kind: "assistant_done"})
 		run, skipped := a.planBatch(answer.Calls)
 		executed := 0
+		lastExecuted := -1
 		for index, batchCall := range run {
 			if a.runErr != nil {
 				break
 			}
 			executed++
+			lastExecuted = index
 			fullResult := a.executeNativeTool(activityCtx, emit, batchCall)
 			if batchCall.Name == "audit_plan_done" && a.plan != nil && auditPlanAccepted(fullResult) {
 				a.completed = true
@@ -356,8 +358,15 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 				break
 			}
 		}
+		// Every recorded call must end up with an output, even when the turn was
+		// aborted (runErr) or a phase change broke the loop: an unresolved
+		// function_call poisons the next request ("native history has unresolved
+		// function calls").
+		for index := lastExecuted + 1; index < len(run); index++ {
+			skipped = append(skipped, run[index])
+		}
 		if len(skipped) > 0 {
-			a.recordSkippedOutputs(skipped, "本回合未执行（独占工具独占一回合、同一状态写只允许一个、重复调用或超过每回合上限）；如需执行请在下回合单独发起")
+			a.recordSkippedOutputs(uniqueCalls(skipped), "本回合未执行（回合被中断、独占工具独占一回合、同一状态写只允许一个、重复调用或超过每回合上限）；如需执行请在下回合单独发起")
 		}
 		if len(answer.Calls) > 1 {
 			emit(Event{Kind: "info", Content: fmt.Sprintf("本回合收到 %d 个工具调用，执行 %d 个，跳过 %d 个", len(answer.Calls), executed, len(skipped))})
@@ -782,6 +791,20 @@ func (a *Agent) chatStream(ctx context.Context, emit func(Event)) (llm.ToolRespo
 	}
 }
 
+// uniqueCalls drops calls that were already acknowledged in this turn.
+func uniqueCalls(calls []llm.FunctionCall) []llm.FunctionCall {
+	seen := map[string]bool{}
+	out := make([]llm.FunctionCall, 0, len(calls))
+	for _, call := range calls {
+		if seen[call.CallID] {
+			continue
+		}
+		seen[call.CallID] = true
+		out = append(out, call)
+	}
+	return out
+}
+
 // briefText trims free-form model text for a single log line.
 func briefText(text string, limit int) string {
 	text = strings.Join(strings.Fields(text), " ")
@@ -862,7 +885,36 @@ func (a *Agent) emitState(emit func(Event)) {
 	emit(Event{Kind: "state", Phase: a.Phase(), Skills: a.prompts.LoadedSkillNames(), Todos: snapshot.Todos, Findings: snapshot.Findings, Project: snapshot.Project, Files: snapshot.Files, Variables: snapshot.Variables, Flows: snapshot.Flows, Audit: snapshot.Audit})
 }
 
+// repairToolHistory closes function_call items that never received an output
+// (interrupted turn, resumed session). Without this the next request is rejected
+// with "native history has unresolved function calls".
+func (a *Agent) repairToolHistory() {
+	answered := map[string]bool{}
+	for _, message := range a.messages {
+		if message.Type == "function_call_output" {
+			answered[message.CallID] = true
+		}
+	}
+	var repaired int
+	for _, message := range a.messages {
+		if message.Type != "function_call" || answered[message.CallID] {
+			continue
+		}
+		a.messages = append(a.messages, llm.Message{
+			Type:    "function_call_output",
+			CallID:  message.CallID,
+			Content: `{"ok":false,"error":"该调用未执行（上一回合被中断）"}`,
+		})
+		answered[message.CallID] = true
+		repaired++
+	}
+	if repaired > 0 {
+		applog.L().Warnf("%s 修复了 %d 个没有结果的工具调用", a.id, repaired)
+	}
+}
+
 func (a *Agent) chatStreamOnce(ctx context.Context, emit func(Event)) (llm.ToolResponse, error) {
+	a.repairToolHistory()
 	if a.reducedReasoning {
 		ctx = llm.WithReducedReasoning(ctx)
 	}

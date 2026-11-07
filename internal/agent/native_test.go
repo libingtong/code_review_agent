@@ -405,3 +405,57 @@ func TestProtocolFailureCapStopsMember(t *testing.T) {
 		t.Fatalf("loop must stop with a clear error, got %v", err)
 	}
 }
+
+// An interrupted turn must not leave a call without an output: the next request
+// would be rejected with "native history has unresolved function calls".
+func TestRepairToolHistoryClosesUnfinishedCalls(t *testing.T) {
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-3", phaseAudit, team.board)
+	defer a.tools.Close()
+
+	a.messages = []llm.Message{
+		{Role: llm.RoleUser, Content: "看文件"},
+		{Type: "function_call", CallID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`},
+		{Type: "function_call", CallID: "c2", Name: "read_file", Arguments: `{"path":"b.go"}`},
+		{Type: "function_call_output", CallID: "c1", Content: `{"ok":true}`},
+	}
+	if err := llm.ValidateToolHistory(a.messages); err == nil {
+		t.Fatal("fixture should start broken")
+	}
+	a.repairToolHistory()
+	if err := llm.ValidateToolHistory(a.messages); err != nil {
+		t.Fatalf("repair did not fix history: %v", err)
+	}
+	answers := 0
+	for _, message := range a.messages {
+		if message.Type == "function_call_output" && message.CallID == "c2" {
+			answers++
+		}
+	}
+	if answers != 1 {
+		t.Fatalf("unfinished call not closed exactly once: %d", answers)
+	}
+}
+
+// A batch that is aborted mid-way (runErr) must still close every call it
+// recorded, otherwise the next request is rejected.
+func TestAbortedBatchClosesEveryCall(t *testing.T) {
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-2", phaseAudit, team.board)
+	defer a.tools.Close()
+
+	response := llm.ToolResponse{Calls: []llm.FunctionCall{
+		{CallID: "c1", Name: "read_file", Arguments: `{"path":"a.go"}`},
+		{CallID: "c2", Name: "read_file", Arguments: `{"path":"b.go"}`},
+	}}
+	a.recordResponse(response)
+	// First call executed, then the turn aborts before the second one runs.
+	a.rejectTool(response.Calls[0], "已执行")
+	a.runErr = context.Canceled
+	a.recordSkippedOutputs(uniqueCalls(response.Calls[1:]), "回合被中断")
+	if err := llm.ValidateToolHistory(a.messages); err != nil {
+		t.Fatalf("aborted batch left broken history: %v", err)
+	}
+}
