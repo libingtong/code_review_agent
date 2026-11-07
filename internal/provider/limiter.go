@@ -35,6 +35,13 @@ type Limiter struct {
 	// from "this plan is actually out of quota".
 	throttles int
 	lastLimit int
+	// learned is the concurrency that survived a settle window; the next start
+	// uses it instead of re-probing from initial_in_flight.
+	learned int
+	// stable counts successes since the last limit change, for settle detection.
+	stable int
+	// onSettle reports a newly learned value so the pool can persist it.
+	onSettle func(limit int)
 }
 
 func newLimiter(cfg config.ConcurrencyConfig) *Limiter {
@@ -46,7 +53,7 @@ func newLimiter(cfg config.ConcurrencyConfig) *Limiter {
 		limit = 1
 	}
 	return &Limiter{limit: float64(limit), max: cfg.MaxInFlight, min: cfg.MinInFlight,
-		cfg: cfg, now: time.Now, lastLimit: limit}
+		cfg: cfg, now: time.Now, lastLimit: limit, learned: 0}
 }
 
 func minInt(a, b int) int {
@@ -142,23 +149,86 @@ func (l *Limiter) AtMinimum() bool {
 	return int(l.limit) <= l.min
 }
 
-// OnSuccess grows the limit after enough consecutive successes.
+// OnSuccess grows the limit after enough consecutive successes and, once the
+// limit has held still for settle_successes, reports it as the learned value.
 func (l *Limiter) OnSuccess() (changed bool, limit int) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	l.successes++
-	cooldown := time.Duration(l.cfg.IncreaseCooldownSeconds) * time.Second
+	l.stable++
+	settle := l.cfg.LearnsConcurrency() && l.cfg.SettleSuccesses > 0 && l.stable >= l.cfg.SettleSuccesses &&
+		int(l.limit) != l.learned
+	learnedNow := 0
+	if settle {
+		l.learned = int(l.limit)
+		l.stable = 0
+		learnedNow = l.learned
+	}
+	grow := l.growthAllowedLocked()
+	var next int
+	if grow {
+		l.successes = 0
+		l.limit = math.Min(float64(l.max), l.limit+float64(l.cfg.IncreaseStep))
+		l.lastLimit = int(l.limit)
+		next = int(l.limit)
+		l.stable = 0
+		l.notifyLocked()
+	}
+	callback := l.onSettle
+	l.mu.Unlock()
+	if learnedNow > 0 && callback != nil {
+		callback(learnedNow)
+	}
+	return grow, next
+}
+
+// growthAllowedLocked decides whether additive increase may run. A pinned
+// learned value stops growth at the value that proved stable.
+func (l *Limiter) growthAllowedLocked() bool {
 	if int(l.limit) >= l.max || l.successes < l.cfg.IncreaseAfterSuccesses {
-		return false, int(l.limit)
+		return false
 	}
+	if l.cfg.Pin && l.learned > 0 && int(l.limit) >= l.learned {
+		return false
+	}
+	cooldown := time.Duration(l.cfg.IncreaseCooldownSeconds) * time.Second
 	if cooldown > 0 && !l.lastDecrease.IsZero() && l.now().Sub(l.lastDecrease) < cooldown {
-		return false, int(l.limit)
+		return false
 	}
+	return true
+}
+
+// SetLearned applies a persisted value: the next run starts here.
+func (l *Limiter) SetLearned(value int) {
+	if value <= 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if value < l.min {
+		value = l.min
+	}
+	if value > l.max {
+		value = l.max
+	}
+	l.learned = value
+	l.limit = float64(value)
+	l.stable = 0
 	l.successes = 0
-	l.limit = math.Min(float64(l.max), l.limit+float64(l.cfg.IncreaseStep))
-	l.lastLimit = int(l.limit)
 	l.notifyLocked()
-	return true, int(l.limit)
+}
+
+// Learned reports the remembered value (0 when nothing has settled yet).
+func (l *Limiter) Learned() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.learned
+}
+
+// OnSettle installs the persistence callback.
+func (l *Limiter) OnSettle(fn func(limit int)) {
+	l.mu.Lock()
+	l.onSettle = fn
+	l.mu.Unlock()
 }
 
 // OnRateLimited halves the limit (never below min) and returns the transition.
@@ -168,6 +238,7 @@ func (l *Limiter) OnRateLimited() (old, next int) {
 	old = int(l.limit)
 	l.throttles++
 	l.successes = 0
+	l.stable = 0
 	l.lastDecrease = l.now()
 	scaled := math.Floor(float64(old) * l.cfg.DecreaseFactor)
 	next = int(scaled)
@@ -187,23 +258,46 @@ func (l *Limiter) OnRateLimited() (old, next int) {
 	return old, next
 }
 
-// Reset restores the initial concurrency, used when the plan window refreshes.
+// Reset restores the starting concurrency: the learned value when one exists,
+// otherwise initial_in_flight. Used by /concurrency reset.
 func (l *Limiter) Reset() {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.limit = float64(l.cfg.InitialInFlight)
+	if l.learned > 0 {
+		l.limit = float64(l.learned)
+	} else {
+		l.limit = float64(l.cfg.InitialInFlight)
+	}
 	if l.limit < float64(l.min) {
 		l.limit = float64(l.min)
 	}
 	l.successes = 0
+	l.stable = 0
 	l.throttles = 0
 	l.lastDecrease = time.Time{}
 	l.notifyLocked()
+}
+
+// ForgetLearned drops the remembered value and resets to the configured start.
+func (l *Limiter) ForgetLearned() {
+	l.mu.Lock()
+	l.learned = 0
+	l.limit = float64(l.cfg.InitialInFlight)
+	if l.limit < float64(l.min) {
+		l.limit = float64(l.min)
+	}
+	l.stable = 0
+	l.successes = 0
+	l.notifyLocked()
+	l.mu.Unlock()
 }
 
 // Describe renders the limiter for the status line.
 func (l *Limiter) Describe() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	if l.learned > 0 {
+		return fmt.Sprintf("并发 %d/%d（学习值 %d）", int(l.limit), l.max, l.learned)
+	}
 	return fmt.Sprintf("并发 %d/%d（自适应）", int(l.limit), l.max)
 }

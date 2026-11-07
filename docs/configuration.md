@@ -93,6 +93,10 @@ concurrency:
   increase_step: 1
   decrease_factor: 0.5
   increase_cooldown_seconds: 120
+  learn: true                      # 稳定后记住并发，下次启动沿用
+  pin: false                       # true = 固定在学习值，不再向上试探
+  settle_successes: 40             # 连续多少次成功算稳定
+  state_file: state/concurrency.json
 ```
 
 ## schedule

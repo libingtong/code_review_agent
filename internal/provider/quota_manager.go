@@ -188,8 +188,12 @@ func (p *Pool) QuotaLines() []string {
 		if !status.Enabled && status.DisabledReason != "" {
 			reason = "（" + status.DisabledReason + "）"
 		}
-		lines = append(lines, fmt.Sprintf("%s%s（%s · %s）%s · %s · %s · %s · %s · 并发 %d/%d",
-			marker, status.Label, status.ID, channel, ratio, state+reason, reset, status.Unit, status.Model, status.Concurrency, status.MaxConcur))
+		concurrency := fmt.Sprintf("并发 %d/%d", status.Concurrency, status.MaxConcur)
+		if status.Learned > 0 {
+			concurrency += fmt.Sprintf("（学习值 %d）", status.Learned)
+		}
+		lines = append(lines, fmt.Sprintf("%s%s（%s · %s）%s · %s · %s · %s · %s · %s",
+			marker, status.Label, status.ID, channel, ratio, state+reason, reset, status.Unit, status.Model, concurrency))
 	}
 	return lines
 }

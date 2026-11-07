@@ -310,3 +310,119 @@ func TestQuotaSummaryShowsThrottling(t *testing.T) {
 		t.Fatalf("summary must show the reduced concurrency: %q", summary)
 	}
 }
+
+// A stable limit is learned once and reused on the next start, so a fresh run
+// does not re-trigger the 429s that were already solved.
+func TestLimiterLearnsStableConcurrency(t *testing.T) {
+	cfg := testConcurrency()
+	cfg.SettleSuccesses = 5
+	cfg.IncreaseAfterSuccesses = 1000 // growth off: we only test learning
+	limiter := newLimiter(cfg)
+	var learned []int
+	limiter.OnSettle(func(limit int) { learned = append(learned, limit) })
+
+	for i := 0; i < 5; i++ {
+		limiter.OnSuccess()
+	}
+	if limiter.Learned() != 4 {
+		t.Fatalf("learned = %d, want 4", limiter.Learned())
+	}
+	if len(learned) != 1 || learned[0] != 4 {
+		t.Fatalf("settle callback = %v", learned)
+	}
+	// Further successes at the same limit do not re-report.
+	for i := 0; i < 10; i++ {
+		limiter.OnSuccess()
+	}
+	if len(learned) != 1 {
+		t.Fatalf("duplicate settle callback: %v", learned)
+	}
+}
+
+func TestLimiterRelearnsLowerValueAfterThrottle(t *testing.T) {
+	cfg := testConcurrency()
+	cfg.SettleSuccesses = 3
+	cfg.IncreaseAfterSuccesses = 1000
+	limiter := newLimiter(cfg)
+	limiter.OnRateLimited() // 4 -> 2
+	for i := 0; i < 3; i++ {
+		limiter.OnSuccess()
+	}
+	if limiter.Learned() != 2 {
+		t.Fatalf("learned = %d, want 2 after throttling", limiter.Learned())
+	}
+}
+
+func TestLimiterPinStopsGrowthAtLearned(t *testing.T) {
+	cfg := testConcurrency()
+	cfg.SettleSuccesses = 2
+	cfg.IncreaseAfterSuccesses = 1
+	cfg.IncreaseStep = 4
+	cfg.Pin = true
+	limiter := newLimiter(cfg)
+	// A pinned channel starts from the value that proved stable last time.
+	limiter.SetLearned(4)
+	for i := 0; i < 10; i++ {
+		limiter.OnSuccess()
+	}
+	if limiter.Current() > limiter.Learned() {
+		t.Fatalf("pinned limiter grew: current=%d learned=%d", limiter.Current(), limiter.Learned())
+	}
+}
+
+func TestConcurrencyStateRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/concurrency.json"
+
+	a := chatServer(t, "a")
+	cfg := testConcurrency()
+	cfg.StateFile = path
+	cfg.SettleSuccesses = 2
+	cfg.IncreaseAfterSuccesses = 1000
+	// Both pools need the same ceiling, otherwise SetLearned clamps to a smaller
+	// default max and the round trip looks broken.
+	base := testConfig(testProvider("glm", a.URL, 0))
+	base.Concurrency = cfg
+	pool, err := NewPool(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetConcurrencyStatePath(path)
+	pool.providers[0].limiter = newLimiter(cfg)
+	pool.providers[0].limiter.OnSettle(func(limit int) { pool.noteSettle("glm", limit) })
+	for i := 0; i < 2; i++ {
+		pool.providers[0].limiter.OnSuccess()
+	}
+	if got := pool.LearnedConcurrency("glm"); got != 4 {
+		t.Fatalf("learned in memory = %d", got)
+	}
+
+	reloaded, err := NewPool(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded.SetConcurrencyStatePath(path)
+	if err := reloaded.LoadConcurrencyState(); err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.LearnedConcurrency("glm"); got != 4 {
+		t.Fatalf("learned not restored: %d", got)
+	}
+	if current, _, _ := reloaded.ConcurrencyOf("glm"); current != 4 {
+		t.Fatalf("restored limiter must start at the learned value: %d", current)
+	}
+	if status := reloaded.Statuses()[0]; status.Learned != 4 {
+		t.Fatalf("status must expose learned value: %+v", status)
+	}
+
+	// Forgetting it clears both memory and file.
+	if err := reloaded.ResetLearned("glm"); err != nil {
+		t.Fatal(err)
+	}
+	if got := reloaded.LearnedConcurrency("glm"); got != 0 {
+		t.Fatalf("learned not cleared: %d", got)
+	}
+	if err := reloaded.ResetLearned("nope"); err == nil {
+		t.Fatal("unknown channel must fail")
+	}
+}

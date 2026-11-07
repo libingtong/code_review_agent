@@ -113,9 +113,11 @@ type Status struct {
 	// Adaptive concurrency: the limit currently in force, its ceiling and how
 	// many 429s this source has absorbed.
 	Concurrency int `json:"concurrency"`
-	MaxConcur   int `json:"max_concurrency"`
-	InFlight    int `json:"in_flight"`
-	Throttles   int `json:"throttles"`
+	// Learned is the stable value remembered from previous runs (0 = none).
+	Learned   int `json:"learned_concurrency"`
+	MaxConcur int `json:"max_concurrency"`
+	InFlight  int `json:"in_flight"`
+	Throttles int `json:"throttles"`
 }
 
 // Pool routes every model request to one provider and fails over on quota
@@ -147,6 +149,8 @@ type Pool struct {
 	quotaStatePath string
 	// limitsPath persists runtime /limit changes.
 	limitsPath string
+	// concurrencyPath persists learned, stable concurrency per channel.
+	concurrencyPath string
 }
 
 // NewPool builds one client per configured source. Provider-specific settings
@@ -172,6 +176,10 @@ func NewPool(cfg config.Config) (*Pool, error) {
 		}
 		provider := &Provider{cfg: entry, client: llm.NewOpenAIClient(entry.OpenAI), aux: auxClient(cfg.CompressOpenAI, entry.OpenAI),
 			quota: window, enabled: entry.IsEnabled(), limiter: newLimiter(cfg.Concurrency)}
+		// Learn once, reuse on the next start: re-probing concurrency from 4 every
+		// launch means re-triggering 429s that were already solved.
+		id := entry.ID
+		provider.limiter.OnSettle(func(limit int) { pool.noteSettle(id, limit) })
 		pool.providers = append(pool.providers, provider)
 	}
 	// A source without a key cannot serve anything. Skip it instead of failing
@@ -419,6 +427,7 @@ func (p *Pool) Statuses() []Status {
 		status.LastError = p.lastErr[provider.ID()]
 		if provider.limiter != nil {
 			status.Concurrency = provider.limiter.Current()
+			status.Learned = provider.limiter.Learned()
 			status.MaxConcur = provider.limiter.Max()
 			status.InFlight = provider.limiter.InFlight()
 			status.Throttles = provider.limiter.Throttles()

@@ -119,7 +119,23 @@ type ConcurrencyConfig struct {
 	DecreaseFactor float64 `yaml:"decrease_factor"`
 	// IncreaseCooldownSeconds blocks growth after a throttle event.
 	IncreaseCooldownSeconds int `yaml:"increase_cooldown_seconds"`
+	// Learn remembers the concurrency that held steady, so the next run starts
+	// there instead of re-probing from initial_in_flight.
+	Learn *bool `yaml:"learn"`
+	// Pin freezes the learned value: start there and never grow back up. 429s
+	// still shrink it, and the new lower value is learned again.
+	Pin bool `yaml:"pin"`
+	// SettleSuccesses is how many successful requests without a throttle make
+	// the current limit worth remembering.
+	SettleSuccesses int `yaml:"settle_successes"`
+	// StateFile persists learned values (top-level section only).
+	StateFile string `yaml:"state_file"`
 }
+
+// LearnsConcurrency reports whether stable values should be remembered.
+func (c ConcurrencyConfig) LearnsConcurrency() bool { return c.Learn == nil || *c.Learn }
+
+const defaultSettleSuccesses = 40
 
 const (
 	defaultIncreaseAfter = 20
@@ -482,6 +498,12 @@ func (c ConcurrencyConfig) WithDefaults(workers int) ConcurrencyConfig {
 	if c.IncreaseCooldownSeconds == 0 {
 		c.IncreaseCooldownSeconds = defaultIncreaseCool
 	}
+	if c.SettleSuccesses == 0 {
+		c.SettleSuccesses = defaultSettleSuccesses
+	}
+	if c.StateFile == "" {
+		c.StateFile = "state/concurrency.json"
+	}
 	return c
 }
 
@@ -533,6 +555,15 @@ func validateConcurrency(cfg *Config) error {
 	}
 	if c.IncreaseCooldownSeconds < 0 || c.IncreaseCooldownSeconds > 86400 {
 		return fmt.Errorf("concurrency.increase_cooldown_seconds must be between 0 and 86400")
+	}
+	if c.SettleSuccesses == 0 {
+		c.SettleSuccesses = defaultSettleSuccesses
+	}
+	if c.SettleSuccesses < 1 || c.SettleSuccesses > 100000 {
+		return fmt.Errorf("concurrency.settle_successes must be between 1 and 100000")
+	}
+	if c.StateFile == "" {
+		c.StateFile = "state/concurrency.json"
 	}
 	return validateSchedule(cfg)
 }

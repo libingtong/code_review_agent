@@ -87,6 +87,9 @@ concurrency:
   increase_step: 1
   decrease_factor: 0.5
   increase_cooldown_seconds: 120
+  learn: true               # 稳定后把并发记住（state/concurrency.json），下次启动直接沿用
+  pin: false                # true = 固定在学习值，不再向上试探
+  settle_successes: 40      # 连续 40 次成功且没被限流，就认为当前并发是稳定的
 
 # 工作时间段（全局）：enabled 改成 true 就生效（窗口外暂停，到点自动恢复）。
 # 渠道可以用 providers[].schedule 覆盖它，例如上面的 glm 是全天可用。

@@ -59,6 +59,7 @@ go build ./... && go vet ./... && go test ./...
 5. **并发安全**：池内 `p.mu` 下不要再次 `RLock`（曾因此死锁）；持锁路径用 `clockOpenAt` 这类不取锁的辅助函数。
 6. **用量记账**：一次逻辑请求的 token 先在 `attemptMeter` 里累积，**只有成功才提交**；失败请求不得计入额度（否则会凭空开一个 5 小时窗口）。
 7. **事件与 UI**：后台状态通过 `Team.publish(Event)` 上报，UI 只读快照（`Snapshot()`/`Statuses()`），不要把可变结构交给 UI。
+8. **并发学习**：稳定并发写入 `state/concurrency.json`，启动时用学习值起步；`pin: true` 表示只降不升。改动限流器时必须保留"变化即重置 stable"的语义，否则会把抖动值当成稳定值记下来。
 
 ## 常见改动落点
 

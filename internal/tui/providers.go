@@ -90,6 +90,10 @@ func (m *Model) providerLines() []string {
 		lines = append(lines, "    "+scheduled)
 		concurrency := fmt.Sprintf("    并发 %d/%d（自适应）· 在飞 %d · 429 %d 次",
 			status.Concurrency, status.MaxConcur, status.InFlight, status.Throttles)
+		if status.Learned > 0 {
+			concurrency = fmt.Sprintf("    并发 %d/%d（学习值 %d，下次启动沿用）· 在飞 %d · 429 %d 次",
+				status.Concurrency, status.MaxConcur, status.Learned, status.InFlight, status.Throttles)
+		}
 		if status.Throttles > 0 && status.Concurrency <= 2 {
 			concurrency += " · 已压到很低，说明不是并发问题而是额度/套餐限制"
 		}
@@ -314,4 +318,47 @@ func parseNumber(value string) (float64, bool) {
 		}
 	}
 	return number, digits
+}
+
+// concurrencyCommand shows or resets learned concurrency: the stable in-flight
+// count that was remembered so a restart does not re-trigger 429s.
+func (m *Model) concurrencyCommand(arg string) tea.Cmd {
+	if m.pool == nil {
+		m.addEvent("当前没有多源配置。")
+		return nil
+	}
+	fields := strings.Fields(arg)
+	if len(fields) > 0 && strings.EqualFold(fields[0], "reset") {
+		id := ""
+		if len(fields) > 1 {
+			id = fields[1]
+		}
+		if err := m.pool.ResetLearned(id); err != nil {
+			m.addEvent("重置并发学习值失败：" + err.Error())
+			return nil
+		}
+		if id == "" {
+			m.addEvent("已清除所有渠道的并发学习值，下次启动从初始并发重新试探")
+		} else {
+			m.addEvent("已清除 " + id + " 的并发学习值")
+		}
+		m.syncTeam()
+		return nil
+	}
+	lines := []string{"并发是自适应的：429 减半、连续成功后逐步回升。稳定后会被记住，下次启动直接用它。", ""}
+	for _, status := range m.pool.Statuses() {
+		learned := "尚未学习"
+		if status.Learned > 0 {
+			learned = fmt.Sprintf("学习值 %d（下次启动沿用）", status.Learned)
+		}
+		state := "启用"
+		if !status.Enabled {
+			state = "停用（" + status.DisabledReason + "）"
+		}
+		lines = append(lines, fmt.Sprintf("%s：当前 %d/%d · %s · 429 %d 次 · %s",
+			status.ID, status.Concurrency, status.MaxConcur, learned, status.Throttles, state))
+	}
+	lines = append(lines, "", "重置：/concurrency reset [ID]；配置项见 concurrency.learn / pin / settle_successes")
+	m.showDetail("并发 · /concurrency", lines)
+	return nil
 }

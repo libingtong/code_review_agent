@@ -16,7 +16,7 @@ import (
 
 func (m *Model) submit(value string) tea.Cmd {
 	command, arg := parseCommand(value)
-	if strings.HasPrefix(value, "/") || command == "go" || command == "budget" || command == "restore" || command == "report" || command == "list" || command == "export" || command == "save" || command == "session" || command == "sessions" || command == "agents" || command == "providers" || command == "quota" || command == "window" || command == "tasks" || command == "limit" {
+	if strings.HasPrefix(value, "/") || command == "go" || command == "budget" || command == "restore" || command == "report" || command == "list" || command == "export" || command == "save" || command == "session" || command == "sessions" || command == "agents" || command == "providers" || command == "quota" || command == "window" || command == "tasks" || command == "limit" || command == "concurrency" {
 		switch command {
 		case "say":
 			return m.openBroadcast(arg)
@@ -110,6 +110,8 @@ func (m *Model) submit(value string) tea.Cmd {
 				m.addEvent("已强制切换到源 " + strings.TrimSpace(arg))
 			}
 			return m.openProviders()
+		case "concurrency":
+			return m.concurrencyCommand(arg)
 		case "limit":
 			return m.limitCommand(arg)
 		case "quota":
@@ -156,6 +158,7 @@ func (m *Model) submit(value string) tea.Cmd {
 				"/budget：停止时打开预算表单；Tab 切换字段、←→ 选择模式、Ctrl+S 保存。0 表示不限；仅无限模式执行时间/token限额。",
 				"/providers：源列表；↑↓ 选择、Enter 强制切换、e 启停、r 刷新余量。/providers <ID> 直接切换。",
 				"/quota [ID]：查看各源 5 小时余量与恢复时间；带 ID 时刷新并显示原始响应，便于修正字段映射。",
+				"/concurrency [reset [ID]]：查看/清除并发学习值（稳定后的并发会被记住，下次启动沿用）。",
 				"/limit [ID] [90%|0.9|off|reserve N]：自设用量上限，只消耗窗口的一部分，把余量留给其它调用同一订阅的系统；设置会持久化。",
 				"/window：工作时间段表单（如 21:00-08:00，可跨午夜）；窗口外自动暂停、到点自动恢复。仅本次进程生效。",
 				"/tasks [import <路径> [--each-subdir] | run | stop | skip <ID> | retry <ID>]：导入并依次执行一批审计任务。",

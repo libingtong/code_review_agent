@@ -107,6 +107,28 @@ concurrency:
 - **并发到底（min）仍 429，或连续 8 次 429** → 判定为套餐额度问题，`quarantine` 后暂停；
 - 成功每 20 次 +1；被限流后 2 分钟冷却期内不增长。
 
+## 稳定后固化并发（学习值）
+
+每次启动都从 `initial_in_flight` 重新试探，会把已经解决过的 429 再撞一遍。所以限流器会把**稳定下来的并发记住**：
+
+```yaml
+concurrency:
+  learn: true               # 默认开：稳定后记住
+  pin: false                # true = 固定在学习值，不再向上试探
+  settle_successes: 40      # 连续多少次成功算"稳定"
+  state_file: state/concurrency.json
+```
+
+机制：
+- 每次成功累加 `stable`；期间若发生 429 或向上增长，`stable` 归零（只有"没变过"才算稳定）；
+- `stable >= settle_successes` 且当前值与已学值不同 → 记为学习值、落盘、并在事件流里提示 `glm 并发稳定在 3，已记住`；
+- **下次启动直接以学习值起步**（会被 `min_in_flight`/`max_in_flight` 夹紧）；
+- 429 仍然会让它减半；若减半后重新稳定，学习值被更新为更低的那个；
+- `pin: true` 时以学习值为上限，不再向上增长（适合"套餐并发很紧、只求稳定"的场景）；
+- 清除：`/concurrency reset [ID]`，或删 `state/concurrency.json`。
+
+这个值属于**厂商/套餐**，与 5H 窗口无关，所以单独存一个文件。
+
 ## 自设用量上限
 
 ```yaml
@@ -128,6 +150,7 @@ quota:
 | 入口 | 输出 |
 | --- | --- |
 | `-check` | 每渠道：余量/状态/重置时间/并发 + **端点可用模型列表** |
-| `/providers` | 渠道卡片：vendor/plan、余量、时段、并发、429 次数、最近错误、停用原因 |
+| `/providers` | 渠道卡片：vendor/plan、余量、时段、并发（含学习值）、429 次数、最近错误、停用原因 |
+| `/concurrency` | 各渠道当前/学习并发与 429 次数；`/concurrency reset [ID]` 清除学习值 |
 | `/quota [ID]` | 强制刷新；带 ID 时打印**原始响应**，用于修正 `bind` |
 | `ExhaustionReport()` | 无可用渠道时逐条说明原因（时段外/冷却/自设上限/额度耗尽/已停用），并带进错误与暂停事件 |

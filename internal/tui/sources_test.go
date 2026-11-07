@@ -462,3 +462,28 @@ func TestChannelWindowCommandRejectsUnknownChannel(t *testing.T) {
 		t.Fatalf("unexpected response: %q", last)
 	}
 }
+
+func TestConcurrencyCommandShowsAndResets(t *testing.T) {
+	m, pool := newSourceModel(t, []config.ProviderConfig{sourceProvider("glm", true)})
+	pool.SetConcurrencyStatePath(filepath.Join(t.TempDir(), "concurrency.json"))
+	m.AttachProviders(pool, &schedule.Gate{Schedule: &schedule.Schedule{}}, nil, nil)
+
+	m.concurrencyCommand("")
+	if m.modal == nil {
+		t.Fatal("no-argument /concurrency should open the listing")
+	}
+	text := strings.Join(m.modal.lines, "\n")
+	if !strings.Contains(text, "尚未学习") {
+		t.Fatalf("listing should show the unlearned state:\n%s", text)
+	}
+
+	m.modal = nil
+	m.concurrencyCommand("reset glm")
+	if len(m.events) == 0 || !strings.Contains(m.events[len(m.events)-1].content, "已清除 glm") {
+		t.Fatalf("reset not reported: %+v", m.events)
+	}
+	m.concurrencyCommand("reset nope")
+	if !strings.Contains(m.events[len(m.events)-1].content, "失败") {
+		t.Fatalf("unknown channel should fail: %+v", m.events)
+	}
+}

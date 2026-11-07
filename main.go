@@ -57,6 +57,10 @@ func main() {
 	if err := pool.LoadLimits(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: 无法恢复自设用量上限：%v\n", err)
 	}
+	pool.SetConcurrencyStatePath(cfg.Concurrency.StateFile)
+	if err := pool.LoadConcurrencyState(); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: 无法恢复并发学习值：%v\n", err)
+	}
 	quotaCtx, stopQuota := context.WithCancel(context.Background())
 	defer stopQuota()
 	go pool.StartQuotaLoop(quotaCtx)
