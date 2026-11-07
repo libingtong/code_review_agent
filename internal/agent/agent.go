@@ -51,6 +51,8 @@ type Agent struct {
 	verifying              bool
 	toolsDisabled          bool
 	protocolFailures       int
+	// forumNudged records the one-time reminder that the agent never posted.
+	forumNudged bool
 	// reducedReasoning sticks after a truncated generation: the same request
 	// would otherwise truncate again on every retry.
 	reducedReasoning bool
@@ -913,8 +915,24 @@ func (a *Agent) repairToolHistory() {
 	}
 }
 
+// nudgeForumPost reminds an agent once that it never declared its scope on the
+// forum. Prompts already require it, but models routinely skip that step and go
+// straight to reading files, which leaves the shared board nearly empty.
+func (a *Agent) nudgeForumPost() {
+	if a.forumNudged || a.board == nil || a.phase == phaseModerator || a.verifying || a.ircOnly {
+		return
+	}
+	if a.turn < 2 || a.board.HasPosted(a.id) {
+		return
+	}
+	a.forumNudged = true
+	a.addMessage(llm.Message{Role: llm.RoleUser, Content: "你还没有在论坛发过言。现在先用 forum_post 发一条简短的分工声明（打算负责哪些文件/方向，1-2 句即可），再继续工作；这条只需做一次。"})
+	applog.L().Infof("%s 未发帖，已注入一次分工提醒", a.id)
+}
+
 func (a *Agent) chatStreamOnce(ctx context.Context, emit func(Event)) (llm.ToolResponse, error) {
 	a.repairToolHistory()
+	a.nudgeForumPost()
 	if a.reducedReasoning {
 		ctx = llm.WithReducedReasoning(ctx)
 	}

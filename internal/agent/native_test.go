@@ -459,3 +459,42 @@ func TestAbortedBatchClosesEveryCall(t *testing.T) {
 		t.Fatalf("aborted batch left broken history: %v", err)
 	}
 }
+
+// The forum nudge fires once per agent and only when nothing was posted yet.
+func TestForumNudgeInjectedOnce(t *testing.T) {
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	countNudges := func(a *Agent) int {
+		n := 0
+		for _, message := range a.messages {
+			if strings.Contains(message.Content, "你还没有在论坛发过言") {
+				n++
+			}
+		}
+		return n
+	}
+
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "recon-1", phaseRecon, team.board)
+	defer a.tools.Close()
+	a.turn = 3
+	a.nudgeForumPost()
+	if got := countNudges(a); got != 1 {
+		t.Fatalf("nudge count = %d", got)
+	}
+	a.nudgeForumPost()
+	if got := countNudges(a); got != 1 {
+		t.Fatalf("nudge repeated: %d", got)
+	}
+
+	// An agent that already posted is never nudged.
+	other := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "recon-2", phaseRecon, team.board)
+	defer other.tools.Close()
+	if _, err := team.board.Post("recon-2", phaseRecon, "*", 0, "范围", "我负责入口与鉴权"); err != nil {
+		t.Fatal(err)
+	}
+	other.turn = 3
+	other.nudgeForumPost()
+	if got := countNudges(other); got != 0 {
+		t.Fatalf("posted agent nudged %d times", got)
+	}
+}
