@@ -28,6 +28,7 @@ type modalState struct {
 	budget       bool
 	budgetForm   *budgetForm
 	providers    *providerModal
+	mode         *modeModal
 	tasks        *tasksModal
 	window       *windowModal
 	agentIndex   int
@@ -165,6 +166,9 @@ func (m *Model) updateModal(msg tea.Msg) tea.Cmd {
 	}
 	if state.window != nil {
 		return m.updateWindow(msg)
+	}
+	if state.mode != nil {
+		return m.updateMode(msg)
 	}
 	if state.providers != nil {
 		return m.updateProviders(msg)
@@ -407,6 +411,9 @@ func (m Model) overlayModal(frame string) string {
 		}
 		if m.modal.providers != nil {
 			footer = "↑↓ 选择 · Enter 强制切换 · e 启停 · r 刷新余量 · Esc 关闭"
+		}
+		if m.modal.mode != nil {
+			footer = "↑↓ 选择 · Enter 使用该模型 · Esc 关闭"
 		}
 		if m.modal.tasks != nil {
 			footer = "↑↓ 选择 · /tasks import <路径> · /tasks run · Esc 关闭"

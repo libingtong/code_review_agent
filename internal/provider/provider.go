@@ -151,6 +151,14 @@ type Pool struct {
 	limitsPath string
 	// concurrencyPath persists learned, stable concurrency per channel.
 	concurrencyPath string
+	// selectionPath persists the user's /mode choice.
+	selectionPath string
+	// modelOverrides remembers runtime model changes per channel.
+	modelOverrides map[string]string
+	// configuredModels is the model from config, restored by ClearSelection.
+	configuredModels map[string]string
+	// compressCfg is kept so a rebuilt client gets the same compression lane.
+	compressCfg config.OpenAIConfig
 }
 
 // NewPool builds one client per configured source. Provider-specific settings
@@ -162,7 +170,8 @@ func NewPool(cfg config.Config) (*Pool, error) {
 	// Normalise concurrency even when the caller built Config directly instead of
 	// loading a validated file: a zero ceiling would freeze the limiter.
 	cfg.Concurrency = cfg.Concurrency.WithDefaults(cfg.Agent.ReconAgents + cfg.Agent.AuditAgents + 1)
-	pool := &Pool{routing: cfg.Routing, now: time.Now, lastErr: map[string]string{}, lineage: map[string]string{}}
+	pool := &Pool{routing: cfg.Routing, now: time.Now, lastErr: map[string]string{}, lineage: map[string]string{},
+		compressCfg: cfg.CompressOpenAI, modelOverrides: map[string]string{}, configuredModels: map[string]string{}}
 	if pool.routing.SwitchBelow == 0 {
 		pool.routing.SwitchBelow = 0.15
 	}
@@ -174,6 +183,7 @@ func NewPool(cfg config.Config) (*Pool, error) {
 		if err != nil {
 			return nil, err
 		}
+		pool.configuredModels[entry.ID] = entry.OpenAI.Model
 		provider := &Provider{cfg: entry, client: llm.NewOpenAIClient(entry.OpenAI), aux: auxClient(cfg.CompressOpenAI, entry.OpenAI),
 			quota: window, enabled: entry.IsEnabled(), limiter: newLimiter(cfg.Concurrency)}
 		// Learn once, reuse on the next start: re-probing concurrency from 4 every
@@ -226,6 +236,11 @@ func envHint(cfg config.OpenAIConfig) string {
 
 // auxClient derives the compression client for one source. Compression must not
 // become the single point of quota failure, so it rides the same pool.
+// rebuildClient recreates a channel's client after its model changed.
+func rebuildClient(provider config.ProviderConfig, compress config.OpenAIConfig) *llm.OpenAIClient {
+	return llm.NewOpenAIClient(provider.OpenAI)
+}
+
 func auxClient(compress config.OpenAIConfig, source config.OpenAIConfig) *llm.OpenAIClient {
 	derived := source
 	if compress.Model != "" {
@@ -489,6 +504,10 @@ func (p *Pool) SetActive(id string) error {
 	p.activeSince = p.now()
 	p.mu.Unlock()
 	p.notifySwitch(previous, id, "手动切换")
+	// The user's choice survives a restart; a transparent failover must not.
+	if err := p.SaveSelection(); err != nil {
+		p.appendNote("保存模式选择失败：" + err.Error())
+	}
 	return nil
 }
 

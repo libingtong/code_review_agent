@@ -406,7 +406,8 @@ tasks:
 | 命令 | 作用 |
 | --- | --- |
 | `/providers` | 渠道列表（vendor/plan、余量、并发、429 次数）；↑↓ 选择、Enter 强制切换、e 启停、r 刷新余量 |
-| `/providers <ID>` | 直接切到某个源 |
+| `/providers <ID>` | 直接切到某个源（不持久化） |
+| `/mode` | 选择器：↑↓ 选渠道/模型，Enter 使用；`/mode glm`、`/mode glm glm-5.3-flash`、`/mode auto`。**选择会持久化，下次启动沿用** |
 | `/quota [ID]` | 余量与恢复时间；带 ID 时刷新并显示原始响应 |
 | `/window` | 时段编辑器（多窗口、按周几、持久化）；`/window off|on|22:00-06:00 mon-fri` 直改 |
 | `/limit` | 自设用量上限：`/limit glm 90%`、`reserve 500`、`off` |
@@ -427,6 +428,7 @@ tasks:
 | `state/limits.json` | `/limit` 设的自设用量上限 | 回到配置文件里的值 |
 | `state/schedule.json` | `/window` 改的全局时段与渠道覆盖 | 回到配置文件里的时段 |
 | `state/concurrency.json` | 各渠道"稳定并发"学习值 | 下次启动从 `initial_in_flight` 重新试探 |
+| `state/selection.json` | `/mode` 选的渠道与模型覆盖 | 下次启动按配置的 weight/模型决定 |
 | `sessions/tasks/<ID>.json` | 任务断点 | 该任务从头开始 |
 | `reports/<ID>/report.{json,md}` | 每任务产出 | 需重新导出 |
 

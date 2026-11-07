@@ -102,6 +102,8 @@ type RoutingConfig struct {
 	SwitchBelow     float64 `yaml:"switch_below"`
 	MinDwellSeconds int     `yaml:"min_dwell_seconds"`
 	Prefer          string  `yaml:"prefer"`
+	// SelectionFile persists the /mode choice (active channel + model overrides).
+	SelectionFile string `yaml:"selection_file"`
 }
 
 // ConcurrencyConfig tunes adaptive in-flight request limiting. Subscription
@@ -461,6 +463,9 @@ func validateRouting(cfg *Config) error {
 	}
 	if r.Prefer == "" {
 		r.Prefer = "sticky"
+	}
+	if r.SelectionFile == "" {
+		r.SelectionFile = "state/selection.json"
 	}
 	return validateConcurrency(cfg)
 }

@@ -487,3 +487,45 @@ func TestConcurrencyCommandShowsAndResets(t *testing.T) {
 		t.Fatalf("unknown channel should fail: %+v", m.events)
 	}
 }
+
+func TestModeCommandSelectsAndPersists(t *testing.T) {
+	m, pool := newSourceModel(t, []config.ProviderConfig{sourceProvider("glm", true), sourceProvider("mm", true)})
+	path := filepath.Join(t.TempDir(), "selection.json")
+	pool.SetSelectionPath(path)
+	m.AttachProviders(pool, &schedule.Gate{Schedule: &schedule.Schedule{}}, nil, nil)
+
+	// Picker lists both channels with their models.
+	m.modeCommand("")
+	if m.modal == nil || m.modal.mode == nil {
+		t.Fatal("/mode should open the picker")
+	}
+	text := strings.Join(m.modal.lines, "\n")
+	if !strings.Contains(text, "glm") || !strings.Contains(text, "m-glm") {
+		t.Fatalf("picker must show channel and model:\n%s", text)
+	}
+
+	// Enter on the second row selects it.
+	m.updateMode(tea.KeyMsg{Type: tea.KeyDown})
+	m.updateMode(tea.KeyMsg{Type: tea.KeyEnter})
+	if pool.ActiveID() != "mm" {
+		t.Fatalf("active = %q", pool.ActiveID())
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("selection not persisted: %v", err)
+	}
+
+	// Direct form switches the model too.
+	m.modeCommand("glm m-glm-flash")
+	if pool.ActiveID() != "glm" || pool.ModelOf("glm") != "m-glm-flash" {
+		t.Fatalf("direct mode command failed: active=%q model=%q", pool.ActiveID(), pool.ModelOf("glm"))
+	}
+}
+
+func TestModeCommandRejectsUnknownChannel(t *testing.T) {
+	m, pool := newSourceModel(t, []config.ProviderConfig{sourceProvider("glm", true)})
+	m.AttachProviders(pool, &schedule.Gate{Schedule: &schedule.Schedule{}}, nil, nil)
+	m.modeCommand("nope")
+	if len(m.events) == 0 || !strings.Contains(m.events[len(m.events)-1].content, "切换失败") {
+		t.Fatalf("unknown channel should fail loudly: %+v", m.events)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -436,5 +437,82 @@ func TestExhaustionReportNamesDisabledChannels(t *testing.T) {
 	}
 	if !strings.Contains(report, "minimax") {
 		t.Fatalf("enabled channel missing from the report: %q", report)
+	}
+}
+
+// "/mode" must survive a restart: the chosen channel and model are persisted.
+func TestSelectionRoundTrip(t *testing.T) {
+	a := chatServer(t, "a")
+	b := chatServer(t, "b")
+	dir := t.TempDir()
+	path := dir + "/selection.json"
+	base := testConfig(testProvider("a", a.URL, 0), testProvider("b", b.URL, 0))
+
+	pool, err := NewPool(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetSelectionPath(path)
+	if err := pool.SetActive("b"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.SetModel("b", "custom-model"); err != nil {
+		t.Fatal(err)
+	}
+	if got := pool.ModelOf("b"); got != "custom-model" {
+		t.Fatalf("model not applied: %q", got)
+	}
+
+	reloaded, err := NewPool(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reloaded.SetSelectionPath(path)
+	if err := reloaded.LoadSelection(); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.ActiveID() != "b" {
+		t.Fatalf("active not restored: %q", reloaded.ActiveID())
+	}
+	if got := reloaded.ModelOf("b"); got != "custom-model" {
+		t.Fatalf("model override not restored: %q", got)
+	}
+
+	// Clear: drops the file, restores configured models, re-picks by weight.
+	if err := reloaded.ClearSelection(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("selection file should be removed: %v", err)
+	}
+	if got := reloaded.ModelOf("b"); got != "model-b" {
+		t.Fatalf("configured model not restored: %q", got)
+	}
+	if err := reloaded.SetModel("nope", "x"); err == nil {
+		t.Fatal("unknown channel must fail")
+	}
+	if err := reloaded.SetModel("a", "  "); err == nil {
+		t.Fatal("empty model must fail")
+	}
+}
+
+// A persisted choice pointing at a disabled channel must not break startup.
+func TestLoadSelectionIgnoresUnavailableChannel(t *testing.T) {
+	a := chatServer(t, "a")
+	dir := t.TempDir()
+	path := dir + "/selection.json"
+	if err := os.WriteFile(path, []byte(`{"version":1,"active":"ghost","models":{"ghost":"x"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pool, err := NewPool(testConfig(testProvider("a", a.URL, 0)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool.SetSelectionPath(path)
+	if err := pool.LoadSelection(); err != nil {
+		t.Fatalf("stale selection must not fail startup: %v", err)
+	}
+	if pool.ActiveID() != "a" {
+		t.Fatalf("active = %q", pool.ActiveID())
 	}
 }

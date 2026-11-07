@@ -362,3 +362,134 @@ func (m *Model) concurrencyCommand(arg string) tea.Cmd {
 	m.showDetail("并发 · /concurrency", lines)
 	return nil
 }
+
+// modeModal is the /mode picker: one row per channel showing its model, Enter
+// selects both the channel and that model, and the choice is persisted.
+type modeModal struct {
+	selected int
+}
+
+func (m *Model) openMode() tea.Cmd {
+	if m.pool == nil {
+		m.addEvent("当前没有多源配置。")
+		return nil
+	}
+	m.modal = &modalState{title: "选择模型 · /mode", mode: &modeModal{}}
+	m.modal.lines = m.modeLines()
+	m.modal.wrapWidth = 0
+	m.input.Blur()
+	m.resizeModal()
+	return nil
+}
+
+func (m *Model) modeLines() []string {
+	lines := []string{"↑↓ 选择 · Enter 使用该渠道与模型（记住，下次启动沿用）· Esc 关闭", ""}
+	for index, status := range m.pool.Statuses() {
+		marker := "  "
+		if index == m.modal.mode.selected {
+			marker = "> "
+		}
+		current := ""
+		if status.Active {
+			current = "  ← 当前"
+		}
+		state := "启用"
+		if !status.Enabled {
+			state = "停用（" + status.DisabledReason + "）"
+		}
+		lines = append(lines, fmt.Sprintf("%s%s · %s%s", marker, status.ID, status.Model, current))
+		lines = append(lines, fmt.Sprintf("    %s · 余量 %.0f%% · 并发 %d/%d · %s",
+			state, status.Ratio*100, status.Concurrency, status.MaxConcur, status.Vendor))
+	}
+	lines = append(lines, "", "其他写法：/mode glm（切渠道）· /mode glm glm-5.3（换模型）· /mode auto（清掉选择）")
+	return lines
+}
+
+func (m *Model) updateMode(msg tea.Msg) tea.Cmd {
+	if m.modal == nil || m.modal.mode == nil || m.pool == nil {
+		return nil
+	}
+	state := m.modal.mode
+	statuses := m.pool.Statuses()
+	if len(statuses) == 0 {
+		return nil
+	}
+	switch key := msg.(type) {
+	case tea.KeyMsg:
+		switch key.String() {
+		case "up", "k":
+			state.selected--
+		case "down", "j":
+			state.selected++
+		case "enter":
+			status := statuses[min(max(0, state.selected), len(statuses)-1)]
+			if err := m.applyMode(status.ID, status.Model); err != nil {
+				m.addEvent("切换失败：" + err.Error())
+				return nil
+			}
+			m.modal = nil
+			m.input.Focus()
+			return nil
+		}
+	case tea.MouseMsg:
+		switch key.Type {
+		case tea.MouseWheelUp:
+			state.selected--
+		case tea.MouseWheelDown:
+			state.selected++
+		}
+	}
+	state.selected = min(max(0, state.selected), len(statuses)-1)
+	m.modal.lines = m.modeLines()
+	m.modal.wrapWidth = 0
+	m.resizeModal()
+	return nil
+}
+
+// applyMode switches channel and pins that channel's model, persisting both.
+func (m *Model) applyMode(id, model string) error {
+	if err := m.pool.SetActive(id); err != nil {
+		return err
+	}
+	if model != "" && model != m.pool.ModelOf(id) {
+		if err := m.pool.SetModel(id, model); err != nil {
+			return err
+		}
+	}
+	m.addEvent(fmt.Sprintf("已切换到 %s（模型 %s），下次启动沿用", id, m.pool.ModelOf(id)))
+	m.syncTeam()
+	return nil
+}
+
+// modeCommand implements /mode [channel] [model] | /mode auto.
+func (m *Model) modeCommand(arg string) tea.Cmd {
+	if m.pool == nil {
+		m.addEvent("当前没有多源配置。")
+		return nil
+	}
+	fields := strings.Fields(arg)
+	if len(fields) == 0 {
+		return m.openMode()
+	}
+	if strings.EqualFold(fields[0], "auto") || strings.EqualFold(fields[0], "clear") {
+		if err := m.pool.ClearSelection(); err != nil {
+			m.addEvent("清除选择失败：" + err.Error())
+			return nil
+		}
+		m.addEvent("已清除渠道/模型选择，下次启动按配置的 weight 决定")
+		m.syncTeam()
+		return nil
+	}
+	id := fields[0]
+	model := ""
+	if len(fields) > 1 {
+		model = fields[1]
+	}
+	if model == "" {
+		model = m.pool.ModelOf(id)
+	}
+	if err := m.applyMode(id, model); err != nil {
+		m.addEvent("切换失败：" + err.Error())
+	}
+	return nil
+}

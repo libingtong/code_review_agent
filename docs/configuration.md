@@ -84,6 +84,7 @@ routing:
   switch_below: 0.15               # 余量低于该比例才换源
   min_dwell_seconds: 300           # 最短驻留，防抖动
   prefer: sticky                   # sticky | highest
+  selection_file: state/selection.json   # /mode 的选择（渠道 + 模型覆盖）
 
 concurrency:
   max_in_flight: 0                 # 0 = recon+audit+1
