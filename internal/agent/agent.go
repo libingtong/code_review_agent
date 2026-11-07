@@ -51,6 +51,9 @@ type Agent struct {
 	verifying              bool
 	toolsDisabled          bool
 	protocolFailures       int
+	// reducedReasoning sticks after a truncated generation: the same request
+	// would otherwise truncate again on every retry.
+	reducedReasoning bool
 	checkpoint             func(*Agent)
 	moderateTool           func(context.Context, ToolCall) string
 	moderatorControl       func(context.Context, ToolCall) string
@@ -758,6 +761,7 @@ func (a *Agent) chatStream(ctx context.Context, emit func(Event)) (llm.ToolRespo
 		}
 		if err == nil {
 			a.protocolFailures = 0
+			a.reducedReasoning = false
 			return response, nil
 		}
 		// A text answer that carried no native call is discarded, not replayed: feeding
@@ -859,6 +863,9 @@ func (a *Agent) emitState(emit func(Event)) {
 }
 
 func (a *Agent) chatStreamOnce(ctx context.Context, emit func(Event)) (llm.ToolResponse, error) {
+	if a.reducedReasoning {
+		ctx = llm.WithReducedReasoning(ctx)
+	}
 	client, ok := a.client.(llm.ToolClient)
 	if !ok {
 		return llm.ToolResponse{}, fmt.Errorf("模型客户端不支持原生工具调用；不能回退到文本工具协议")

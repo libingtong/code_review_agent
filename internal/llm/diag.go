@@ -27,6 +27,27 @@ func payloadFrom(ctx context.Context) any {
 	return ctx.Value(payloadKey{})
 }
 
+// reducedReasoningKey marks a request that should spend less output budget on
+// thinking. Providers that bill reasoning against max_output_tokens otherwise
+// reproduce the same truncation on every retry.
+type reducedReasoningKey struct{}
+
+// WithReducedReasoning asks the client to downgrade reasoning for this call.
+func WithReducedReasoning(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, reducedReasoningKey{}, true)
+}
+
+func reducedReasoning(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	flagged, _ := ctx.Value(reducedReasoningKey{}).(bool)
+	return flagged
+}
+
 // logModelFailure records a failed model call: always a warn line, plus a
 // redacted payload dump when logging.llm_dump is on.
 func logModelFailure(ctx context.Context, protocol, model string, err error) {

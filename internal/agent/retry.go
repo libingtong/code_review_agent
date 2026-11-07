@@ -115,6 +115,9 @@ func (a *Agent) modelRequest(ctx context.Context, emit func(Event), request func
 			continue
 		}
 		if errors.Is(err, llm.ErrIncompleteGeneration) {
+			// Reasoning usually consumed the whole output budget; retry cheaply
+			// instead of replaying the same oversized request.
+			a.reducedReasoning = true
 			if incompleteRetries == 3 {
 				return "", fmt.Errorf("生成未完成，回退到上次完整结果后重试3次仍失败；保留进度，输入 go 可继续: %w", err)
 			}

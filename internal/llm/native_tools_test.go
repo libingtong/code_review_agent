@@ -618,3 +618,30 @@ func TestTextHistoryModeNeverReplaysNativeItems(t *testing.T) {
 		t.Fatalf("degraded text missing: %s", input)
 	}
 }
+
+// When a generation is truncated by max_output_tokens, the retry must spend less
+// on reasoning instead of replaying the same oversized request.
+func TestReducedReasoningDowngradesRequest(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp_1","status":"completed","output":[{"type":"function_call","call_id":"c1","name":"noop","arguments":"{}"}]}`))
+	}))
+	defer server.Close()
+	client := NewOpenAIClient(config.OpenAIConfig{BaseURL: server.URL, APIKey: "k", Model: "m", APIInterface: "responses",
+		MaxContextTokens: 1000, MaxOutputTokens: 100, TopP: 1, TimeoutSeconds: 5, Stream: false,
+		Thinking: &config.ThinkingConfig{Type: "enabled"}, ReasoningEffort: "high"})
+	tools := []ToolDefinition{{Type: "function", Name: "noop", Description: "x", Parameters: json.RawMessage(`{"type":"object"}`)}}
+	ctx := WithReducedReasoning(context.Background())
+	if _, err := client.ChatTools(ctx, []Message{{Role: RoleUser, Content: "hi"}}, tools, func(Delta) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if body["thinking"] != nil {
+		t.Fatalf("thinking must be dropped when reasoning is reduced: %v", body["thinking"])
+	}
+	reasoning, _ := body["reasoning"].(map[string]any)
+	if reasoning["effort"] != "low" {
+		t.Fatalf("reasoning effort = %v", reasoning)
+	}
+}

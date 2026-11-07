@@ -283,6 +283,10 @@ func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, t
 		Tools:        tools, ToolChoice: "required", ParallelToolCalls: false, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP,
 		MaxOutputTokens: c.cfg.MaxOutputTokens, Stream: c.cfg.Stream, Thinking: c.cfg.Thinking, Reasoning: c.responseReasoning(),
 	}
+	if reducedReasoning(ctx) {
+		// Truncation is almost always reasoning eating the whole output budget.
+		payload.Thinking, payload.Reasoning = nil, &reasoningOptions{Effort: "low"}
+	}
 	progress, err := newGenerationTracker(ctx, emit)
 	if err != nil {
 		return ToolResponse{}, err
