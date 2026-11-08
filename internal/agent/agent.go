@@ -852,6 +852,11 @@ func (a *Agent) chatStream(ctx context.Context, emit func(Event)) (llm.ToolRespo
 				}
 			}
 			if !allowed {
+				if limit := a.cfg.Agent.MaxTurnsPerStage; a.phase == phaseRecon && limit > 0 && a.turn > limit {
+					call, _ := a.recordResponse(response)
+					a.rejectTool(call, "侦察预算已用尽：只能调用 audit_plan_done")
+					return llm.ToolResponse{}, fmt.Errorf("侦察预算已用尽（%d 回合），成员尝试调用 %s 时终止；请重启后重新侦察", limit, call.Name)
+				}
 				call, _ := a.recordResponse(response)
 				if call.Name != "read_tool_buffer" {
 					a.tools.ClearBuffer()
@@ -872,7 +877,11 @@ func (a *Agent) chatStream(ctx context.Context, emit func(Event)) (llm.ToolRespo
 		applog.L().Warnf("%s 回合未返回原生工具调用（第 %d 次）：%s",
 			a.id, a.protocolFailures+1, briefText(joinAssistantMessage(response.Thinking, response.Content), 200))
 		a.protocolFailures++
-		if limit := a.cfg.Agent.MaxProtocolFailures; limit > 0 && a.protocolFailures >= limit {
+		limit := a.cfg.Agent.MaxProtocolFailures
+		if limit <= 0 {
+			limit = 3 // unset config (tests, programmatic callers) must still be bounded
+		}
+		if a.protocolFailures >= limit {
 			return llm.ToolResponse{}, fmt.Errorf("连续 %d 次没有返回原生工具调用，已停止该成员（该渠道模型可能不支持工具调用，或上下文已严重漂移）", a.protocolFailures)
 		}
 		feedback := fmt.Sprintf("本回合没有收到原生工具调用（第 %d 次），你的文字回答未被执行。请立即通过原生 function call 调用一个当前可用工具继续工作，例如 review_state、read_file、forum_roster；不要用文字或代码块描述调用。", a.protocolFailures)

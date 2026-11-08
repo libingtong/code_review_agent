@@ -18,9 +18,16 @@ type noticeClient struct {
 }
 
 func (c *noticeClient) Chat(ctx context.Context, messages []llm.Message) (string, error) {
+	if c.call == nil {
+		// Compression may run in fixtures that only script tool calls.
+		return "", nil
+	}
 	return c.call(ctx, messages)
 }
 func (c *noticeClient) ChatStream(ctx context.Context, messages []llm.Message, emit func(llm.Delta) error) error {
+	if c.call == nil {
+		return nil
+	}
 	text, err := c.call(ctx, messages)
 	if err != nil {
 		return err

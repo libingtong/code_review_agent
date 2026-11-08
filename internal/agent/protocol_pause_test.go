@@ -21,6 +21,7 @@ func TestWorkerProtocolFailureDoesNotKillAgent(t *testing.T) {
 		}), nil
 	}}
 	team := newTestTeam(t, client)
+	team.cfg.Agent.MaxProtocolFailures = 10 // fixture recovers after several failures
 	team.createStageLocked(phaseRecon)
 	agent := team.workers[0].agent
 	agent.Run(context.Background(), "inspect", func(Event) {})
