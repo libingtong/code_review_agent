@@ -116,3 +116,28 @@ func TestSeverityOrderAndEscaping(t *testing.T) {
 		t.Fatal("pipe characters must be escaped in markdown tables")
 	}
 }
+
+// A run that never closed (infinite mode has no end_audit) must still summarise
+// what it found, instead of emitting "暂无结论".
+func TestReportConclusionFallsBackToFindings(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "report.md")
+	built := Report{GeneratedAt: "2026-11-08T00:00:00Z", Findings: []tools.Finding{
+		{ID: 1, Severity: "high", Title: "硬编码私钥", Path: "a/b.java", Line: 40},
+		{ID: 2, Severity: "medium", Title: "回调未验签", Path: "c/d.java", Line: 113},
+	}}
+	if err := WriteMarkdown(path, built); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, "暂无结论（本轮未形成最终结论") && !strings.Contains(text, "本轮共提交 2 个漏洞") {
+		t.Fatalf("conclusion not synthesised:\n%s", text)
+	}
+	if !strings.Contains(text, "本轮共提交 2 个漏洞") || !strings.Contains(text, "high 1") {
+		t.Fatalf("conclusion text wrong:\n%s", text)
+	}
+}

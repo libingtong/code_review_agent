@@ -43,6 +43,52 @@ type Report struct {
 	Task        *TaskInfo                 `json:"task,omitempty"`
 }
 
+// conclusionText falls back to a generated summary when the audit never closed
+// (infinite mode has no end_audit tool), so a delivered report always states what
+// was actually found instead of "暂无结论".
+func (r Report) conclusionText() string {
+	if strings.TrimSpace(r.Audit.Summary) != "" {
+		return r.Audit.Summary
+	}
+	if len(r.Findings) == 0 {
+		return `本轮未提交任何漏洞；已审文件数与覆盖情况见下方统计，不构成「无漏洞」结论。`
+	}
+	bySeverity := map[string]int{}
+	for _, finding := range r.Findings {
+		severity := strings.ToLower(strings.TrimSpace(finding.Severity))
+		if severity == "" {
+			severity = "unknown"
+		}
+		bySeverity[severity]++
+	}
+	parts := make([]string, 0, len(bySeverity))
+	for _, severity := range []string{"critical", "high", "medium", "low", "info", "unknown"} {
+		if count := bySeverity[severity]; count > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d", severity, count))
+			delete(bySeverity, severity)
+		}
+	}
+	head := fmt.Sprintf("本轮共提交 %d 个漏洞（%s）。审计未走完关闭流程，以下结论基于已完成证据：",
+		len(r.Findings), strings.Join(parts, "、"))
+	lines := []string{head}
+	limit := len(r.Findings)
+	if limit > 5 {
+		limit = 5
+	}
+	for index := 0; index < limit; index++ {
+		finding := r.Findings[index]
+		location := finding.Path
+		if finding.Line > 0 {
+			location = fmt.Sprintf("%s:%d", finding.Path, finding.Line)
+		}
+		lines = append(lines, fmt.Sprintf("- [%s] %s（%s）", finding.Severity, finding.Title, location))
+	}
+	if len(r.Findings) > limit {
+		lines = append(lines, fmt.Sprintf("- 其余 %d 个见下方漏洞清单", len(r.Findings)-limit))
+	}
+	return strings.Join(lines, "\n")
+}
+
 // Build preserves every field the previous TUI-only exporter emitted. UI
 // truncation is never applied: the report is the full evidence record.
 func Build(snapshot tools.Snapshot, revocations []agent.FindingRevocation) Report {
@@ -129,10 +175,10 @@ func (r Report) Markdown() string {
 		b.WriteString("- 审计结束状态：未结束（覆盖可能不完整）\n")
 	}
 	b.WriteString("\n## 结论\n\n")
-	if strings.TrimSpace(r.Audit.Summary) == "" {
-		b.WriteString("暂无结论。\n")
+	if summary := r.conclusionText(); summary != "" {
+		b.WriteString(summary + "\n")
 	} else {
-		b.WriteString(r.Audit.Summary + "\n")
+		b.WriteString("暂无结论（本轮未形成最终结论；覆盖情况见下）。\n")
 	}
 	if strings.TrimSpace(r.Audit.NextSteps) != "" {
 		b.WriteString("\n## 下一步\n\n" + r.Audit.NextSteps + "\n")
