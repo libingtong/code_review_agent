@@ -594,3 +594,31 @@ func TestReconTurnLimitStopsRunawayWorker(t *testing.T) {
 		t.Fatalf("submit reminder should appear once, got %d", nudges)
 	}
 }
+
+// A text message between a call and its output is rejected by providers
+// ("interrupts an unresolved function call"); normalization must repair it.
+func TestNormalizeToolHistoryMovesInterleavedText(t *testing.T) {
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-1", phaseAudit, team.board)
+	defer a.tools.Close()
+
+	a.messages = []llm.Message{
+		{Role: llm.RoleUser, Content: "开始"},
+		{Type: "function_call", CallID: "c1", Name: "read_file", Arguments: `{}`},
+		{Role: llm.RoleUser, Content: "插进来的通知"},
+		{Type: "function_call_output", CallID: "c1", Content: `{"ok":true}`},
+	}
+	a.normalizeToolHistory()
+	if err := llm.ValidateToolHistory(a.messages); err != nil {
+		t.Fatalf("normalized history still invalid: %v", err)
+	}
+	// The call is immediately followed by an output; the text moved after it.
+	if a.messages[2].Type != "function_call_output" {
+		t.Fatalf("call not followed by output: %+v", a.messages)
+	}
+	last := a.messages[len(a.messages)-1]
+	if last.Type != "" || last.Content != "插进来的通知" {
+		t.Fatalf("interleaved text lost or misplaced: %+v", a.messages)
+	}
+}

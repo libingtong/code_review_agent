@@ -120,6 +120,52 @@ func newWorker(cfg config.Config, prompts prompt.Prompts, client, compressClient
 	return &Agent{cfg: cfg, prompts: prompts, client: client, compressClient: compressClient, tools: registry, id: id, phase: phase, board: board}
 }
 
+// normalizeToolHistory enforces the pairing rules providers require: every call
+// gets an output, outputs never float free, and no text sits between a call and
+// its output. It only touches tool items, so it is safe before every request
+// (unlike sanitizeMessages, which also rewrites the system prompt).
+func (a *Agent) normalizeToolHistory() {
+	source := append([]llm.Message(nil), a.messages...)
+	var normalized []llm.Message
+	var pending []llm.Message
+	flush := func() {
+		for _, call := range pending {
+			normalized = append(normalized, llm.Message{
+				Type:    "function_call_output",
+				CallID:  call.CallID,
+				Content: `{"ok":false,"error":"该调用未执行（历史修复）"}`,
+			})
+		}
+		pending = nil
+	}
+	answered := func(callID string) bool {
+		for index, call := range pending {
+			if call.CallID == callID {
+				pending = append(pending[:index], pending[index+1:]...)
+				return true
+			}
+		}
+		return false
+	}
+	for _, msg := range source {
+		switch msg.Type {
+		case "function_call":
+			pending = append(pending, msg)
+			normalized = append(normalized, msg)
+		case "function_call_output":
+			if !answered(msg.CallID) {
+				continue
+			}
+			normalized = append(normalized, msg)
+		default:
+			flush()
+			normalized = append(normalized, msg)
+		}
+	}
+	flush()
+	a.messages = normalized
+}
+
 func (a *Agent) sanitizeMessages() {
 	a.invalidateResponseContinuation()
 	if len(a.messages) == 0 {
@@ -142,26 +188,8 @@ func (a *Agent) sanitizeMessages() {
 	} else {
 		cleaned[0] = llm.Message{Role: llm.RoleSystem, Content: a.systemPrompt()}
 	}
-	// Compression can cut a tool pair in half; an output without its call is
-	// rejected by every provider, so drop the orphans.
-	pending := map[string]bool{}
-	normalized := cleaned[:0]
-	for _, msg := range cleaned {
-		switch msg.Type {
-		case "function_call":
-			pending[msg.CallID] = true
-			normalized = append(normalized, msg)
-		case "function_call_output":
-			if !pending[msg.CallID] {
-				continue
-			}
-			delete(pending, msg.CallID)
-			normalized = append(normalized, msg)
-		default:
-			normalized = append(normalized, msg)
-		}
-	}
-	a.messages = normalized
+	a.messages = cleaned
+	a.normalizeToolHistory()
 }
 
 func (a *Agent) systemPrompt() string {
@@ -972,6 +1000,7 @@ func (a *Agent) nudgeForumPost() {
 }
 
 func (a *Agent) chatStreamOnce(ctx context.Context, emit func(Event)) (llm.ToolResponse, error) {
+	a.normalizeToolHistory()
 	a.repairToolHistory()
 	a.nudgeForumPost()
 	if a.reducedReasoning {
