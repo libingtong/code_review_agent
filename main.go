@@ -37,6 +37,9 @@ func main() {
 	check := flag.Bool("check", false, "print provider/quota/schedule/queue status and exit")
 	headless := flag.Bool("run", false, "headless: audit -dir, write session/report, then exit")
 	maxMinutes := flag.Int("max-minutes", 0, "with -run: stop after N minutes (0 = run until interrupted)")
+	resume := flag.String("resume", "", "with -run: continue from a saved session (path, or latest for the newest)")
+	rescan := flag.Bool("rescan", false, "with -resume: reuse the saved reconnaissance map and start a fresh audit stage")
+	keepBudget := flag.Bool("keep-budget", false, "with -resume: keep the saved elapsed/token usage instead of a fresh window")
 	version := flag.Bool("version", false, "print build version and exit")
 	flag.Parse()
 	if *version {
@@ -160,7 +163,7 @@ func main() {
 	}
 
 	if *headless {
-		os.Exit(runHeadless(cfg, runner, gate, *auditDir, *maxMinutes))
+		os.Exit(runHeadless(cfg, runner, gate, *auditDir, headlessOptions{maxMinutes: *maxMinutes, resume: *resume, rescan: *rescan, keepBudget: *keepBudget}))
 	}
 
 	view := tui.New(runner, cfg, *auditDir)
@@ -177,7 +180,71 @@ func main() {
 // runHeadless audits without the TUI: the same team, the same session/report
 // artifacts, but events go to stderr. It exists so a scan can be started from a
 // script (or by an agent) and its log inspected afterwards.
-func runHeadless(cfg config.Config, team *agent.Team, gate *schedule.Gate, dir string, maxMinutes int) int {
+// headlessOptions carries the run knobs so the signature stays readable.
+type headlessOptions struct {
+	maxMinutes int
+	resume     string
+	rescan     bool
+	keepBudget bool
+}
+
+// resolveSession turns "latest" (or an empty latest-ish selector) into the newest
+// session file, so resuming does not require typing a timestamp.
+func resolveSession(selector string) (string, error) {
+	if selector != "latest" {
+		return selector, nil
+	}
+	entries, err := filepath.Glob(filepath.Join("sessions", "*.json"))
+	if err != nil {
+		return "", err
+	}
+	if len(entries) == 0 {
+		return "", fmt.Errorf("sessions/ 下没有可恢复的会话")
+	}
+	newest := entries[0]
+	newestInfo, err := os.Stat(newest)
+	if err != nil {
+		return "", err
+	}
+	for _, entry := range entries[1:] {
+		info, err := os.Stat(entry)
+		if err != nil {
+			continue
+		}
+		if info.ModTime().After(newestInfo.ModTime()) {
+			newest, newestInfo = entry, info
+		}
+	}
+	return newest, nil
+}
+
+func runHeadless(cfg config.Config, team *agent.Team, gate *schedule.Gate, dir string, opts headlessOptions) int {
+	maxMinutes := opts.maxMinutes
+	if strings.TrimSpace(opts.resume) != "" {
+		// A resumed session carries its own workspace, so -dir is optional here.
+		path, err := resolveSession(opts.resume)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "错误：%v\n", err)
+			return 2
+		}
+		if err := team.LoadSession(path); err != nil {
+			fmt.Fprintf(os.Stderr, "错误：恢复会话失败：%v\n", err)
+			return 2
+		}
+		if opts.rescan {
+			if err := team.ReuseRecon(); err != nil {
+				fmt.Fprintf(os.Stderr, "错误：复用侦察失败：%v\n", err)
+				return 2
+			}
+		}
+		if !opts.keepBudget {
+			team.ResetBudgetUsage()
+		}
+		dir = team.Workspace()
+		snapshot := team.Snapshot()
+		coverage := tools.ComputeCoverage(snapshot)
+		fmt.Fprintf(os.Stderr, "恢复会话：%s · 阶段 %s · 范围 %s · 漏洞 %d%s\n", path, team.Phase(), coverage.String(0), len(snapshot.Findings), map[bool]string{true: " · 仅复用侦察，重建审计团队", false: ""}[opts.rescan])
+	}
 	if strings.TrimSpace(dir) == "" {
 		dir = cfg.Workspace
 	}

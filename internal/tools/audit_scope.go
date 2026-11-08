@@ -129,6 +129,38 @@ func (r *Registry) SuggestAuditFiles(limit int, perDir int) []string {
 	return out
 }
 
+// PlanAuditScope registers the files a plan intends to audit. They are "pending",
+// not "reviewing": nobody has claimed them yet, and coverage must not report them
+// as work in progress just because they appear in a map.
+func (r *Registry) PlanAuditScope(paths []string) []string {
+	var added []string
+	for _, p := range paths {
+		p = normalizeInventoryPath(p)
+		if p == "" || !r.inventoryHasPath(p) {
+			continue
+		}
+		found := false
+		for i := range r.files {
+			if r.files[i].Path != p {
+				continue
+			}
+			found = true
+			if r.files[i].Status == "skipped" {
+				r.files[i].Status = "pending"
+			}
+			if r.files[i].Note == "" {
+				r.files[i].Note = "侦察地图计划审计范围"
+			}
+			break
+		}
+		if !found {
+			r.files = append(r.files, FileReview{Path: p, Status: "pending", Note: "侦察地图计划审计范围"})
+		}
+		added = append(added, p)
+	}
+	return added
+}
+
 // SeedAuditScope adds system-picked files to the review scope and marks where they
 // came from, so the report can separate model picks from the deterministic floor.
 func (r *Registry) SeedAuditScope(paths []string) []string {

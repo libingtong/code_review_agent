@@ -258,7 +258,7 @@ func TestTeamStagesIsolationHandoffAndSession(t *testing.T) {
 	}
 	for _, f := range s.Files {
 		if f.Status != "reviewed" {
-			t.Fatal("incorrect file aggregation")
+			t.Fatalf("incorrect file aggregation: %s=%s", f.Path, f.Status)
 		}
 	}
 	if strings.Contains(team.handoff, "PRIVATE_ONLY") || !strings.Contains(team.handoff, "NOTE_recon-4") {

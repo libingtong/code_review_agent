@@ -67,25 +67,28 @@ type Team struct {
 	phase              string
 	input              string
 	handoff            string
-	snapshot           tools.Snapshot
-	running            bool
-	cancel             context.CancelFunc
-	done               chan struct{}
-	emitter            func(Event)
-	ircMessages        []IRCMessage
-	ircMu              sync.Mutex
-	ircPublishing      int
-	ircNextID          int64
-	ircChanged         chan struct{}
-	stageOpen          bool
-	budget             auditBudget
-	userBroadcasts     []userBroadcast
-	sessionPath        string
-	pool               *provider.Pool
-	gate               Gate
-	pauseReason        string
-	pauseUntil         time.Time
-	now                func() time.Time
+	// auditScope is the union of the recon map's audit_files. The audit stage seeds
+	// every worker with it so coverage keeps its denominator when recon hands off.
+	auditScope     []string
+	snapshot       tools.Snapshot
+	running        bool
+	cancel         context.CancelFunc
+	done           chan struct{}
+	emitter        func(Event)
+	ircMessages    []IRCMessage
+	ircMu          sync.Mutex
+	ircPublishing  int
+	ircNextID      int64
+	ircChanged     chan struct{}
+	stageOpen      bool
+	budget         auditBudget
+	userBroadcasts []userBroadcast
+	sessionPath    string
+	pool           *provider.Pool
+	gate           Gate
+	pauseReason    string
+	pauseUntil     time.Time
+	now            func() time.Time
 }
 
 func NewTeam(cfg config.Config, prompts prompt.Prompts, client, compressClient llm.Client, registry *tools.Registry) *Team {
@@ -460,6 +463,11 @@ func (t *Team) createStageLocked(stage string) {
 		a.assignment = assignment
 		if stage == phaseAudit {
 			a.handoff = t.handoff
+			if len(t.auditScope) > 0 {
+				// The recon map becomes the initial scope: without it coverage resets
+				// to 0/0 the moment the audit stage starts.
+				a.tools.PlanAuditScope(t.auditScope)
+			}
 		}
 		w := &teamWorker{agent: a, saved: workerSession{Status: WorkerStatus{ID: id, Name: t.board.Name(id), Phase: stage, Status: "pending"}, Assignment: a.assignment, Snapshot: cloneSnapshot(a.tools.Snapshot())}}
 		a.checkpoint = func(a *Agent) { t.capture(w, a) }
@@ -698,6 +706,7 @@ func (t *Team) Run(ctx context.Context, input string, emit func(Event)) {
 			}
 			t.handoff = t.buildHandoffLocked()
 			t.phase = phaseAudit
+			t.auditScope = t.reconScopeLocked()
 			t.createStageLocked(phaseAudit)
 			t.mu.Unlock()
 			stopModerator = t.startModerator(runCtx)
@@ -711,6 +720,88 @@ func (t *Team) Run(ctx context.Context, input string, emit func(Event)) {
 		t.emitState()
 		return
 	}
+}
+
+// ResetBudgetUsage clears the saved elapsed/token counters so a resumed run gets a
+// fresh window (the limits themselves are untouched).
+func (t *Team) ResetBudgetUsage() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.budget.elapsed, t.budget.tokens, t.budget.estimated, t.budget.reason = 0, 0, false, ""
+}
+
+// ReuseRecon keeps the reconnaissance handoff and the audit scope of a loaded
+// session, drops every audit worker and starts a fresh audit stage. Reconnaissance
+// is the slow half of a run (tens of minutes), so a repeated scan should not pay for
+// it twice.
+func (t *Team) ReuseRecon() error {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	plans := 0
+	for _, w := range t.workers {
+		if w.saved.Status.Phase == phaseRecon && w.saved.Plan != nil {
+			plans++
+		}
+	}
+	if plans == 0 {
+		return fmt.Errorf("这个会话没有可复用的侦察交接")
+	}
+	scope := t.reconScopeLocked()
+	if len(scope) == 0 {
+		return fmt.Errorf("这个会话没有审计范围文件，无法只复用侦察")
+	}
+	snapshot := t.aggregateLocked()
+	project := snapshot.Project
+	kept := t.workers[:0]
+	for _, w := range t.workers {
+		if w.saved.Status.Phase == phaseAudit {
+			_ = w.agent.tools.Close()
+			continue
+		}
+		kept = append(kept, w)
+	}
+	t.workers = kept
+	t.phase = phaseAudit
+	t.auditScope = scope
+	t.handoff = t.buildHandoffLocked()
+	t.createStageLocked(phaseAudit)
+	for _, w := range t.workers {
+		if w.saved.Status.Phase != phaseAudit {
+			continue
+		}
+		w.agent.handoff = t.handoff
+		if len(project.Note) > 0 {
+			w.agent.tools.RestoreSnapshot(tools.Snapshot{Project: project, Files: w.agent.tools.Snapshot().Files})
+		}
+		w.saved.Snapshot = cloneSnapshot(w.agent.tools.Snapshot())
+	}
+	t.snapshot = t.aggregateLocked()
+	return nil
+}
+
+// reconScopeLocked unions the recon plans' audit_files, capped at the same target a
+// single worker aims for so the audit stage stays finishable.
+func (t *Team) reconScopeLocked() []string {
+	limit := auditScopeTarget(t.cfg.Agent.MinAuditFiles) * 2
+	seen := map[string]bool{}
+	var scope []string
+	for _, w := range t.workers {
+		if w.saved.Status.Phase != phaseRecon || w.saved.Plan == nil {
+			continue
+		}
+		for _, path := range w.saved.Plan.AuditFiles {
+			path = strings.TrimSpace(path)
+			if path == "" || seen[path] {
+				continue
+			}
+			seen[path] = true
+			scope = append(scope, path)
+			if len(scope) >= limit {
+				return scope
+			}
+		}
+	}
+	return scope
 }
 
 func (t *Team) buildHandoffLocked() string {
@@ -829,7 +920,10 @@ func (t *Team) aggregateLocked() tools.Snapshot {
 			if at, ok := files[f.Path]; ok {
 				previous := &out.Files[at]
 				previous.Note += "\n" + f.Note
-				if fileStatusRank(f.Status) < fileStatusRank(previous.Status) {
+				// Keep the most advanced status: a teammate that never touched a
+				// planned file must not downgrade the aggregate from reviewed to
+				// pending (or reviewing).
+				if fileStatusRank(f.Status) > fileStatusRank(previous.Status) {
 					previous.Status = f.Status
 				}
 			} else {
