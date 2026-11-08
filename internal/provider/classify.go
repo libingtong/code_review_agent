@@ -82,7 +82,7 @@ var billingMarkers = []string{
 	"insufficient", "余额不足", "余额已耗尽", "额度不足", "额度已用尽", "欠费", "payment required",
 	"credit balance", "credits exhausted", "quota exceeded", "quota_exceeded", "billing_hard_limit",
 	"exceeded your current quota", "openai status 402:", "usage limit reached", "5h limit",
-	"limit reached", "套餐额度", "额度耗尽",
+	"套餐额度", "额度耗尽",
 }
 
 var modelMarkers = []string{
@@ -117,11 +117,19 @@ func classifyFailure(err error) FailureKind {
 	if hasMarker(text, authMarkers) {
 		return FailureAuth
 	}
+	// Rate limiting is checked before billing: "ratelimit reached" used to match the
+	// ("limit reached") billing marker and killed runs with a bogus quota verdict.
+	// Vendors spell it differently: "rate limit", "rate_limit_exceeded" (GLM),
+	// "ratelimit", "too many requests", or a bare 429.
+	rateLimitMarkers := []string{
+		"openai status 429", "rate limit", "rate_limit", "ratelimit",
+		"too many requests", "throttl", "请求频率", "速率限制", "并发",
+	}
+	if hasMarker(text, rateLimitMarkers) {
+		return FailureRateLimited
+	}
 	if hasMarker(text, billingMarkers) {
 		return FailureBilling
-	}
-	if strings.Contains(text, "openai status 429") || strings.Contains(text, "rate limit") || strings.Contains(text, "too many requests") {
-		return FailureRateLimited
 	}
 	var network net.Error
 	if errors.As(err, &network) {
