@@ -130,7 +130,13 @@ func newWorker(cfg config.Config, prompts prompt.Prompts, client, compressClient
 // its output. It only touches tool items, so it is safe before every request
 // (unlike sanitizeMessages, which also rewrites the system prompt).
 func (a *Agent) normalizeToolHistory() {
-	source := append([]llm.Message(nil), a.messages...)
+	a.messages = normalizeToolHistoryMessages(a.messages)
+}
+
+// normalizeToolHistoryMessages is the same repair for a detached slice, so a saved
+// session is loadable instead of failing validation on resume.
+func normalizeToolHistoryMessages(messages []llm.Message) []llm.Message {
+	source := append([]llm.Message(nil), messages...)
 	var normalized []llm.Message
 	var pending []llm.Message
 	flush := func() {
@@ -168,7 +174,7 @@ func (a *Agent) normalizeToolHistory() {
 		}
 	}
 	flush()
-	a.messages = normalized
+	return normalized
 }
 
 func (a *Agent) sanitizeMessages() {
