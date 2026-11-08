@@ -10,6 +10,7 @@ import (
 
 	"code-review-agent/internal/forum"
 	"code-review-agent/internal/llm"
+	"code-review-agent/internal/tools"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
 )
@@ -128,18 +129,15 @@ func statusLabel(status string) string {
 	return status
 }
 func (m Model) summary() string {
-	done, reviewed := 0, 0
+	done := 0
 	for _, t := range m.snapshot.Todos {
 		if t.Status == "done" || t.Status == "completed" {
 			done++
 		}
 	}
-	for _, f := range m.snapshot.Files {
-		if f.Status == "reviewed" {
-			reviewed++
-		}
-	}
-	return fmt.Sprintf("覆盖 %d/%d · Todo %d/%d · 漏洞 %d", reviewed, len(m.snapshot.Files), done, len(m.snapshot.Todos), len(m.snapshot.Findings))
+	coverage := tools.ComputeCoverage(m.snapshot)
+	line := coverage.String(m.budget.Elapsed)
+	return fmt.Sprintf("%s · Todo %d/%d · 漏洞 %d", line, done, len(m.snapshot.Todos), len(m.snapshot.Findings))
 }
 
 func generationLabel(progress *llm.GenerationProgress) string {
@@ -170,7 +168,8 @@ func (m Model) leftContent(width, height int) (pinned, lines []string) {
 			reviewed++
 		}
 	}
-	pinned = append(pinned, fitLine(fmt.Sprintf("覆盖 %d/%d · Todo %d · 漏洞 %d", reviewed, len(m.snapshot.Files), len(m.snapshot.Todos), len(m.snapshot.Findings)), width))
+	coverage := tools.ComputeCoverage(m.snapshot)
+	pinned = append(pinned, fitLine(fmt.Sprintf("%s · Todo %d · 漏洞 %d", coverage.String(m.budget.Elapsed), len(m.snapshot.Todos), len(m.snapshot.Findings)), width))
 	mode, timeLimit, tokLimit := "普通", "不限", "不限"
 	if b.InfiniteMode {
 		mode = "无限"

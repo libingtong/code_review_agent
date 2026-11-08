@@ -228,7 +228,7 @@ func (r Report) Markdown() string {
 	}
 
 	b.WriteString("\n## 覆盖\n\n")
-	b.WriteString(fmt.Sprintf("- 已审/跳过 %d 个文件，未覆盖 %d 个。\n", len(r.Files.Reviewed), len(r.Files.Unreviewed)))
+	b.WriteString(fmt.Sprintf("- 已审 %d 个文件，未覆盖 %d 个。\n", len(r.Files.Reviewed), len(r.Files.Unreviewed)))
 	if len(r.Files.Unreviewed) > 0 {
 		b.WriteString("\n未覆盖文件（前 50 个）：\n\n")
 		for i, f := range r.Files.Unreviewed {

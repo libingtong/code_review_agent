@@ -230,7 +230,13 @@ func runHeadless(cfg config.Config, team *agent.Team, gate *schedule.Gate, dir s
 		case "state":
 			lastState = event
 			if len(event.Workers) > 0 {
-				fmt.Fprintf(os.Stderr, "· %s\n", progressLine(event))
+				// Progress first: how much of the workspace is audited, what is left,
+				// and how long that should take at the observed rate.
+				coverage := tools.ComputeCoverage(team.Snapshot())
+				fmt.Fprintf(os.Stderr, "· %s | %s | 成员 %d\n",
+					progressLine(event),
+					coverage.String(team.BudgetStatus().Elapsed),
+					len(event.Workers))
 			}
 		}
 	}

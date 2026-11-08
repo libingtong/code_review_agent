@@ -93,7 +93,7 @@ func TestWriteBothFormats(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(md)
-	for _, needle := range []string{"# 代码安全审计报告 · 示例任务", "SQL 注入", "已审/跳过 2 个文件", "旧结论", "b.go"} {
+	for _, needle := range []string{"# 代码安全审计报告 · 示例任务", "SQL 注入", "已审 2 个文件", "旧结论", "b.go"} {
 		if !strings.Contains(text, needle) {
 			t.Fatalf("markdown missing %q:\n%s", needle, text)
 		}
