@@ -243,7 +243,11 @@ func runHeadless(cfg config.Config, team *agent.Team, gate *schedule.Gate, dir s
 		dir = team.Workspace()
 		snapshot := team.Snapshot()
 		coverage := tools.ComputeCoverage(snapshot)
-		fmt.Fprintf(os.Stderr, "恢复会话：%s · 阶段 %s · 范围 %s · 漏洞 %d%s\n", path, team.Phase(), coverage.String(0), len(snapshot.Findings), map[bool]string{true: " · 仅复用侦察，重建审计团队", false: ""}[opts.rescan])
+		mode := ""
+		if opts.rescan {
+			mode = " · 仅复用侦察，重建审计团队"
+		}
+		fmt.Fprintf(os.Stderr, "恢复会话：%s · 阶段 %s · 范围 %d 个文件（已审 %d）· 漏洞 %d%s\n", path, team.Phase(), coverage.Total, coverage.Reviewed, len(snapshot.Findings), mode)
 	}
 	if strings.TrimSpace(dir) == "" {
 		dir = cfg.Workspace
@@ -309,7 +313,11 @@ func runHeadless(cfg config.Config, team *agent.Team, gate *schedule.Gate, dir s
 	}
 
 	budget := team.BudgetStatus()
-	fmt.Fprintf(os.Stderr, "开始审计：%s（预算 %s 无限=%v 已用 %d tokens）\n", dir, budgetLabel(budget), budget.InfiniteMode, budget.UsedTokens)
+	limit := budgetLabel(budget)
+	if budget.TokenLimit > 0 {
+		limit += fmt.Sprintf(" · token 上限 %d", budget.TokenLimit)
+	}
+	fmt.Fprintf(os.Stderr, "开始审计：%s（预算 %s · 已用 %d tokens）\n", dir, limit, budget.UsedTokens)
 	start := time.Now()
 	team.Run(ctx, dir, emit)
 	elapsed := time.Since(start).Round(time.Second)
