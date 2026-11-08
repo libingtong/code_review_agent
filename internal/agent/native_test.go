@@ -622,3 +622,23 @@ func TestNormalizeToolHistoryMovesInterleavedText(t *testing.T) {
 		t.Fatalf("interleaved text lost or misplaced: %+v", a.messages)
 	}
 }
+
+// A prose-only moderator turn becomes moderator_idle instead of a protocol
+// failure: the moderator supervises, it must not die on politeness.
+func TestModeratorProseBecomesIdle(t *testing.T) {
+	client := &noticeClient{tools: func(_ context.Context, messages []llm.Message) (llm.ToolResponse, error) {
+		return llm.ToolResponse{Content: "一切正常，无需干预。"}, nil
+	}}
+	team := newTestTeam(t, client)
+	defer team.Close()
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), phaseModerator, phaseModerator, team.board)
+	defer a.tools.Close()
+
+	response, err := a.chatStream(context.Background(), func(Event) {})
+	if err != nil {
+		t.Fatalf("prose-only moderator turn must not fail: %v", err)
+	}
+	if len(response.Calls) != 1 || response.Calls[0].Name != "moderator_idle" {
+		t.Fatalf("expected synthetic moderator_idle, got %+v", response.Calls)
+	}
+}

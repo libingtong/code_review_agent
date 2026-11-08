@@ -465,6 +465,14 @@ func (a *Agent) phaseToolCorrection(name string) string {
 		return ""
 	}
 	if a.phase == phaseRecon {
+		// Once the recon budget is spent, only submission remains: the model must
+		// finish with what it has instead of reading one more file forever.
+		if limit := a.cfg.Agent.MaxTurnsPerStage; limit > 0 && a.turn > limit {
+			if name == "audit_plan_done" || name == "read_tool_buffer" {
+				return ""
+			}
+			return "侦察预算已用尽：现在只能调用 audit_plan_done 提交已有地图与文件清单。"
+		}
 		switch name {
 		case "review_state", "list_files", "read_file", "search_content", "search_context", "git_inspect", "todo_create", "todo_update", "file_review_update", "project_note_update", "audit_plan_done", "load_skill":
 			return ""
@@ -817,6 +825,20 @@ func (a *Agent) chatStream(ctx context.Context, emit func(Event)) (llm.ToolRespo
 		}
 		if err == nil {
 			err = validateNativeResponse(response, a.messages)
+		}
+		if err == nil && len(response.Calls) == 0 && a.phase == phaseModerator {
+			// The moderator's only legitimate "do nothing" answer is moderator_idle.
+			// Some vendors answer in prose regardless of tool_choice; turning that
+			// prose into the idle call keeps history valid and the run supervised
+			// instead of killing the moderator after three polite paragraphs.
+			if strings.TrimSpace(removeThinkBlocks(response.Content)) != "" {
+				response.Calls = []llm.FunctionCall{{
+					CallID:    fmt.Sprintf("moderator-idle-%d", a.turn),
+					Name:      "moderator_idle",
+					Arguments: "{}",
+				}}
+				emit(Event{Kind: "info", Content: "管理员本回合只有文字回复，按 moderator_idle 处理"})
+			}
 		}
 		if err == nil && len(response.Calls) == 0 {
 			err = fmt.Errorf("请求已完成但没有原生工具调用（回答 %d 字节，推理 %d 字节），不是网络停滞", len(response.Content), len(response.Thinking))
