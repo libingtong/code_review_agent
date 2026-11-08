@@ -77,18 +77,29 @@ func TestLimiterHonoursContextCancellation(t *testing.T) {
 
 func TestLimiterHalvesOnThrottleAndGrowsOnSuccess(t *testing.T) {
 	limiter := newLimiter(testConcurrency())
+	now := time.Now()
+	limiter.now = func() time.Time { return now }
 	old, next := limiter.OnRateLimited()
 	if old != 4 || next != 2 {
 		t.Fatalf("throttle 4 -> %d (old %d), want 2", next, old)
 	}
+	// A burst of 429s belongs to one throttle window: five in-flight requests all
+	// fail at once, and each one must not halve the limit again (observed
+	// 17→8→4→2→1 in 400ms, which serialized the whole run).
+	old, next = limiter.OnRateLimited()
+	if old != 2 || next != 2 {
+		t.Fatalf("burst must not halve twice, got %d -> %d", old, next)
+	}
+	now = now.Add(rateLimitDecreaseCooldown + time.Second)
 	old, next = limiter.OnRateLimited()
 	if old != 2 || next != 1 {
-		t.Fatalf("throttle should keep halving, got %d -> %d", old, next)
+		t.Fatalf("throttle after cooldown should halve, got %d -> %d", old, next)
 	}
 	if !limiter.AtMinimum() {
 		t.Fatal("limit 1 with min 1 must report the minimum")
 	}
 	// Below minimum is impossible.
+	now = now.Add(rateLimitDecreaseCooldown + time.Second)
 	old, next = limiter.OnRateLimited()
 	if next != 1 || old != 1 {
 		t.Fatalf("limit must not drop below min: %d -> %d", old, next)
@@ -339,17 +350,38 @@ func TestLimiterLearnsStableConcurrency(t *testing.T) {
 	}
 }
 
-func TestLimiterRelearnsLowerValueAfterThrottle(t *testing.T) {
+// A value produced by a burst collapse must not be remembered between runs: the
+// plan only proved it cannot hold 17, not that it is limited to 2.
+func TestLimiterDoesNotLearnBurstCollapsedValue(t *testing.T) {
 	cfg := testConcurrency()
 	cfg.SettleSuccesses = 3
 	cfg.IncreaseAfterSuccesses = 1000
 	limiter := newLimiter(cfg)
-	limiter.OnRateLimited() // 4 -> 2
+	limiter.OnRateLimited() // 4 -> 2, below learnedFloor
 	for i := 0; i < 3; i++ {
 		limiter.OnSuccess()
 	}
-	if limiter.Learned() != 2 {
-		t.Fatalf("learned = %d, want 2 after throttling", limiter.Learned())
+	if got := limiter.Learned(); got != 0 {
+		t.Fatalf("learned = %d, want no learned value below the floor", got)
+	}
+}
+
+// A value that is still above the floor is remembered, which is the normal path
+// for "this plan tops out around 4".
+func TestLimiterRelearnsLowerValueAboveFloor(t *testing.T) {
+	cfg := testConcurrency()
+	cfg.MaxInFlight = 16
+	cfg.InitialInFlight = 16
+	cfg.SettleSuccesses = 3
+	cfg.IncreaseAfterSuccesses = 1000
+	limiter := newLimiter(cfg)
+	limiter.OnRateLimited() // 16 -> 8
+	limiter.OnRateLimited() // burst-coalesced, stays 8
+	for i := 0; i < 3; i++ {
+		limiter.OnSuccess()
+	}
+	if got := limiter.Learned(); got != 8 {
+		t.Fatalf("learned = %d, want 8", got)
 	}
 }
 

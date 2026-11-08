@@ -10,6 +10,17 @@ import (
 	"code-review-agent/internal/config"
 )
 
+// rateLimitDecreaseCooldown coalesces a burst of 429s. Vendors throttle every
+// request that was already in flight when the quota window closed, so five
+// simultaneous 429s used to halve the limit five times (17→8→4→2→1 in 400ms) and
+// serialize every later request of the run.
+const rateLimitDecreaseCooldown = 20 * time.Second
+
+// learnedFloor is the lowest concurrency worth remembering between runs. A burst
+// collapse can leave the limit at 1; persisting that would cap every future run
+// even though the plan was only throttled at 17.
+const learnedFloor = 4
+
 // Limiter is an adaptive in-flight request limiter (AIMD).
 //
 // Subscription plans advertise small concurrent-project limits; a team of 12
@@ -156,7 +167,7 @@ func (l *Limiter) OnSuccess() (changed bool, limit int) {
 	l.successes++
 	l.stable++
 	settle := l.cfg.LearnsConcurrency() && l.cfg.SettleSuccesses > 0 && l.stable >= l.cfg.SettleSuccesses &&
-		int(l.limit) != l.learned
+		int(l.limit) != l.learned && int(l.limit) >= learnedFloor
 	learnedNow := 0
 	if settle {
 		l.learned = int(l.limit)
@@ -207,6 +218,10 @@ func (l *Limiter) SetLearned(value int) {
 	if value < l.min {
 		value = l.min
 	}
+	// Never revive a value that only ever came out of a burst collapse.
+	if value < learnedFloor && !l.cfg.Pin {
+		value = learnedFloor
+	}
 	if value > l.max {
 		value = l.max
 	}
@@ -239,7 +254,14 @@ func (l *Limiter) OnRateLimited() (old, next int) {
 	l.throttles++
 	l.successes = 0
 	l.stable = 0
-	l.lastDecrease = l.now()
+	now := l.now()
+	if !l.lastDecrease.IsZero() && now.Sub(l.lastDecrease) < rateLimitDecreaseCooldown {
+		// Same throttle window: the limit already paid for this burst. Count the
+		// throttle (callers use it to detect "plan exhausted") but do not shrink
+		// again.
+		return old, old
+	}
+	l.lastDecrease = now
 	scaled := math.Floor(float64(old) * l.cfg.DecreaseFactor)
 	next = int(scaled)
 	if next < l.min {
