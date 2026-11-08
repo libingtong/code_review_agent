@@ -641,7 +641,9 @@ func (a *Agent) callTool(ctx context.Context, emit func(Event), call ToolCall) (
 		// The handoff is a large JSON blob; re-reading it every few turns inflates
 		// context and was observed 41 times in four minutes.
 		if a.handoffReads >= maxHandoffReads {
-			result = `{"ok":false,"error":"交接已读过两遍；请直接用其中的具体路径 read_file / search_content，不要重复读取整个交接"}`
+			// An error here made the model retry the same call: 93 read_handoff calls
+			// in 20 minutes, 69 of them rejected. Hand back a bounded excerpt instead.
+			result = boundedExcerpt(a.handoff, 4000) + "\n\n（交接全文已读过两遍；以上为节选，其余证据请按文件路径 read_file / search_content 取证）"
 			break
 		}
 		a.handoffReads++

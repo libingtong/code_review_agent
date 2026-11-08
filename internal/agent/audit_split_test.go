@@ -69,7 +69,7 @@ func TestReadHandoffIsCapped(t *testing.T) {
 		}
 	}
 	out, _ := a.callTool(context.Background(), func(Event) {}, ToolCall{Name: "read_handoff", Arguments: args})
-	if !strings.Contains(out, "交接已读过两遍") {
-		t.Fatalf("handoff re-read must be capped: %s", out)
+	if !strings.Contains(out, "以上为节选") {
+		t.Fatalf("handoff re-read must return a bounded excerpt: %s", out)
 	}
 }

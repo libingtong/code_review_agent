@@ -47,13 +47,15 @@ func ComputeCoverage(snapshot Snapshot) Coverage {
 	return coverage
 }
 
-// ETA estimates the remaining time from the observed review rate. It returns 0
-// when there is not enough progress to extrapolate (no file reviewed yet).
+// ETA estimates the remaining time from the observed rate. Files in progress count
+// as progress: extrapolating from finished files alone produced "预计还需 8h18m"
+// while 82 files were actively being read (4 finished out of 97).
 func (c Coverage) ETA(elapsed time.Duration) time.Duration {
-	if c.Reviewed == 0 || c.Remaining == 0 || elapsed <= 0 {
+	touched := c.Reviewed + c.Reviewing
+	if touched == 0 || c.Remaining == 0 || elapsed <= 0 {
 		return 0
 	}
-	perFile := elapsed / time.Duration(c.Reviewed)
+	perFile := elapsed / time.Duration(touched)
 	return perFile * time.Duration(c.Remaining)
 }
 

@@ -21,12 +21,12 @@ func TestComputeCoverageAndETA(t *testing.T) {
 	if coverage.Percent != 50 {
 		t.Fatalf("percent = %.1f", coverage.Percent)
 	}
-	// 2 files in 10 minutes → 5 min/file → 2 remaining → 10 minutes.
-	if eta := coverage.ETA(10 * time.Minute); eta != 10*time.Minute {
+	// 2 reviewed + 1 in progress in 10 minutes → 3m20s/file → 2 remaining.
+	if eta := coverage.ETA(10 * time.Minute); eta != 6*time.Minute+40*time.Second {
 		t.Fatalf("eta = %s", eta)
 	}
 	line := coverage.String(10 * time.Minute)
-	for _, want := range []string{"覆盖 2/4", "50%", "剩余 2", "预计还需 10m"} {
+	for _, want := range []string{"覆盖 2/4", "50%", "剩余 2", "预计还需 6m"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("line %q missing %q", line, want)
 		}
