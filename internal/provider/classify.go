@@ -139,6 +139,16 @@ func classifyFailure(err error) FailureKind {
 		strings.Contains(text, "broken pipe") || errors.Is(err, llm.ErrIncompleteGeneration) {
 		return FailureNetwork
 	}
+	// Transient server-side failures are retryable, not fatal: GLM reports them as
+	// "server_error 网络错误，请稍后重试" and killing the member loses its progress.
+	serverMarkers := []string{
+		"server_error", "internal server error", "service unavailable", "bad gateway",
+		"gateway timeout", "overloaded", "网络错误", "稍后重试", "openai status 500",
+		"openai status 502", "openai status 503", "openai status 504",
+	}
+	if hasMarker(text, serverMarkers) {
+		return FailureNetwork
+	}
 	return FailureOther
 }
 

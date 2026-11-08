@@ -22,3 +22,18 @@ func TestClassifyVendorRateLimitSpellings(t *testing.T) {
 		t.Fatalf("500 must not be rate limited")
 	}
 }
+
+// Transient server errors must be retried, not treated as fatal member failures.
+func TestClassifyTransientServerErrors(t *testing.T) {
+	cases := []string{
+		`openai native response.failed: server_error 网络错误，错误id 2026，请稍后重试。`,
+		`openai status 502: bad gateway`,
+		`service unavailable`,
+		`overloaded`,
+	}
+	for _, text := range cases {
+		if got := Classify(fmt.Errorf("%s", text)); got != FailureNetwork {
+			t.Fatalf("%q classified as %v, want network", text, got)
+		}
+	}
+}
