@@ -57,8 +57,9 @@ type Agent struct {
 	// fileReviewCalls counts file_review_update calls: a worker that never claims a
 	// file is only chatting in the forum, not auditing.
 	fileReviewCalls int
-	// stageTurnNudged records the one-time "submit now" reminder.
-	stageTurnNudged bool
+	// stageNudge records how far the recon pacing ladder has advanced: 0 none,
+	// 1 half budget ("stop browsing, map files"), 2 budget spent ("submit only").
+	stageNudge int
 	// reducedReasoning sticks after a truncated generation: the same request
 	// would otherwise truncate again on every retry.
 	reducedReasoning bool
@@ -378,9 +379,9 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 					emit(Event{Kind: "error", Content: a.runErr.Error()})
 					return
 				}
-				if a.turn > limit && !a.stageTurnNudged {
-					a.stageTurnNudged = true
-					a.addMessage(llm.Message{Role: llm.RoleUser, Content: fmt.Sprintf("侦察预算已用 %d 回合（上限 %d）。请立即整理现有证据，调用 audit_plan_done 提交审计地图与文件清单，不要再继续扩展探索。", a.turn, limit)})
+				if stage, text := a.reconPacing(); stage > a.stageNudge {
+					a.stageNudge = stage
+					a.addMessage(llm.Message{Role: llm.RoleUser, Content: text})
 				}
 			}
 		}
@@ -478,19 +479,25 @@ func (a *Agent) phaseToolCorrection(name string) string {
 			return "已经进入审计阶段 " + strconv.Itoa(a.turn) + " 回合但还没有认领任何文件：请先用 file_review_update 认领文件，再 read_file 读取源码。"
 		}
 	}
+	if a.phase == phaseRecon {
+		// Recon outreach is paced: browsing the forum is cheap and addictive, so a
+		// worker will happily spend 90 turns on forum_read/list_files and never reach
+		// audit_plan_done. Checked before the generic forum allowance below.
+		if limit := a.cfg.Agent.MaxTurnsPerStage; limit > 0 {
+			if a.turn > limit && name != "audit_plan_done" {
+				return "侦察预算已用尽：现在只能调用 audit_plan_done 提交已有地图与文件清单，其他工具全部不可用。"
+			}
+			if soft := limit / 2; soft > 0 && a.turn > soft && reconForumTool(name) {
+				return "侦察已过半（" + strconv.Itoa(a.turn) + "/" + strconv.Itoa(limit) + " 回合）：论坛信息已经够用，不要再读论坛或花名册；现在用 list_files / search_content / read_file 铺开具体待审文件清单，凑够后调用 audit_plan_done 提交。"
+			}
+		}
+	}
 	if forum.IsTool(name) || name == "read_tool_buffer" || name == "read_handoff" || name == "worker_irc_reply" {
 		return ""
 	}
 	if a.phase == phaseRecon {
-		// Once the recon budget is spent, only submission remains. read_tool_buffer is
-		// deliberately excluded: leaving it open let workers page old results until
-		// they were killed at limit+grace without ever submitting.
-		if limit := a.cfg.Agent.MaxTurnsPerStage; limit > 0 && a.turn > limit {
-			if name == "audit_plan_done" {
-				return ""
-			}
-			return "侦察预算已用尽：现在只能调用 audit_plan_done 提交已有地图与文件清单，其他工具全部不可用。"
-		}
+		// The budget check above already ran, so this branch only whitelists the
+		// mapping tools a recon worker may still use.
 		switch name {
 		case "review_state", "list_files", "read_file", "search_content", "search_context", "git_inspect", "todo_create", "todo_update", "file_review_update", "project_note_update", "audit_plan_done", "load_skill":
 			return ""
@@ -502,6 +509,53 @@ func (a *Agent) phaseToolCorrection(name string) string {
 		return "当前已经处于执行审计阶段，不能再次调用 audit_plan_done。请从当前原生工具定义中选择。"
 	}
 	return ""
+}
+
+// reconForumTool lists the read-only community tools a recon worker can hide in
+// instead of building the map.
+func reconForumTool(name string) bool {
+	switch name {
+	case "forum_read", "forum_threads", "forum_roster", "forum_wait":
+		return true
+	}
+	return false
+}
+
+// reconPacing decides when a recon worker is told to stop exploring. Observation:
+// with a 200-turn budget four recon workers spent 25 minutes on 334 forum_read and
+// 245 list_files calls and never reached audit_plan_done, so the audit stage would
+// have started from an empty map. Pacing starts at half the budget, while there is
+// still room to widen the file list instead of submitting too late or too thin.
+func (a *Agent) reconPacing() (int, string) {
+	limit := a.cfg.Agent.MaxTurnsPerStage
+	if limit <= 0 {
+		return 0, ""
+	}
+	if a.turn > limit {
+		return 2, fmt.Sprintf("侦察预算已用尽（%d/%d 回合）。现在只能调用 audit_plan_done：把已有地图、候选和待审文件清单立刻提交，其他工具一律不可用。", a.turn, limit)
+	}
+	soft := limit / 2
+	if soft < 1 {
+		soft = 1
+	}
+	if a.turn > soft {
+		return 1, fmt.Sprintf("侦察已过半（%d/%d 回合，已列入地图 %d 个文件，下限 %d）。停止浏览论坛和重复列目录：先用 list_files / search_content / read_file 把入口、鉴权、DAO、上传、模板、配置铺开成具体文件清单，凑够下限就调用 audit_plan_done 提交。", a.turn, limit, a.mappedFiles(), a.cfg.Agent.MinAuditFiles)
+	}
+	return 0, ""
+}
+
+// mappedFiles counts the files this worker already put on the review board.
+func (a *Agent) mappedFiles() int {
+	if a.tools == nil {
+		return 0
+	}
+	count := 0
+	for _, file := range a.tools.Snapshot().Files {
+		if strings.TrimSpace(file.Path) != "" {
+			count++
+		}
+	}
+	return count
 }
 
 func (a *Agent) callTool(ctx context.Context, emit func(Event), call ToolCall) (string, string) {

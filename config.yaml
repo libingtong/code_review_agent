@@ -151,7 +151,7 @@ agent:
   budget_tokens: 0
   max_turns: 0
   # 侦察阶段回合上限（无限模式下也生效）：超限先提醒"立即 audit_plan_done"，再 5 回合未提交就停掉该成员
-  max_turns_per_stage: 200
+  max_turns_per_stage: 90
   # 审计阶段多少回合后仍没认领任何文件，就只允许读码/认领类工具（防止一直在论坛聊天）
   audit_nudge_turns: 60
   # 侦察交接至少给出这么多待审文件（第一轮 36 个文件 → 5 个漏洞，后来的 5 个文件 → 0 个）
