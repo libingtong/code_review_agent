@@ -782,6 +782,11 @@ func cloneSnapshot(s tools.Snapshot) tools.Snapshot {
 
 func (t *Team) aggregateLocked() tools.Snapshot {
 	var out tools.Snapshot
+	// Workspace scale is a property of the registry, not of any single worker, so
+	// progress can show it before the audit scope is claimed.
+	if t.registry != nil {
+		out.Candidates = t.registry.CandidateCount()
+	}
 	stage := t.phase
 	if stage == "completed" {
 		stage = phaseAudit
