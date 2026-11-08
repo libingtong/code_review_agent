@@ -773,7 +773,7 @@ func (t *Team) ReuseRecon() error {
 	target := auditScopeTarget(t.cfg.Agent.MinAuditFiles)
 	merged := make([]string, 0, target)
 	seen := map[string]bool{}
-	for _, p := range t.registry.SuggestAuditFiles(target, 4) {
+	for _, p := range t.registry.SuggestAuditFiles(target, 8) {
 		if seen[p] {
 			continue
 		}

@@ -60,6 +60,11 @@ type Agent struct {
 	// handoffReads counts read_handoff calls: the payload is large and re-reading it
 	// wastes context.
 	handoffReads int
+	// skillLoads and stateCalls bound the two meta tools that dominated turns
+	// (93 load_skill + 150 review_state in 23 minutes while only 3 findings were filed).
+	skillLoads   int
+	stateCalls   int
+	lastStateKey string
 	// stageNudge records how far the recon pacing ladder has advanced: 0 none,
 	// 1 half budget ("stop browsing, map files"), 2 budget spent ("submit only").
 	stageNudge int
@@ -85,6 +90,10 @@ const stageTurnGrace = 5
 
 // maxHandoffReads caps how often one worker may re-read the structured handoff.
 const maxHandoffReads = 2
+
+// maxSkillLoads caps skill loading per worker: the prompt library is small and the
+// content is already in the system prompt after the first load.
+const maxSkillLoads = 3
 
 const (
 	phaseRecon     = "recon"
@@ -478,6 +487,9 @@ func (a *Agent) phaseToolCorrection(name string) string {
 		}
 		return "管理员只能读取源码、审查论坛并调用管理员工具；不能替普通 Agent 提交漏洞或投票结束阶段。"
 	}
+	if name == "load_skill" && a.skillLoads >= maxSkillLoads {
+		return "已经加载了足够的技能，继续 load_skill 只是浪费回合；请直接 read_file / search_content 审计并把证据写进 report_finding。"
+	}
 	// Audit: a worker that never claimed a file is chatting, not auditing. The
 	// window is the expensive resource (observed: 101 forum_read and 8 read_file in
 	// the first four minutes of an audit stage), so the guard starts after a couple
@@ -585,6 +597,29 @@ func (a *Agent) reconPacing() (int, string) {
 	return 0, ""
 }
 
+// stateFingerprint summarises the review state so an unchanged review_state call can
+// be answered without resending the whole board.
+func stateFingerprint(snapshot tools.Snapshot) string {
+	var b strings.Builder
+	for _, file := range snapshot.Files {
+		b.WriteString(file.Path)
+		b.WriteByte('=')
+		b.WriteString(file.Status)
+		b.WriteByte(';')
+	}
+	for _, finding := range snapshot.Findings {
+		b.WriteString(finding.Key)
+		b.WriteByte(';')
+	}
+	for _, todo := range snapshot.Todos {
+		b.WriteString(todo.Title)
+		b.WriteByte('=')
+		b.WriteString(todo.Status)
+		b.WriteByte(';')
+	}
+	return b.String()
+}
+
 // mappedFiles counts the files this worker already put on the review board.
 func (a *Agent) mappedFiles() int {
 	if a.tools == nil {
@@ -652,7 +687,20 @@ func (a *Agent) callTool(ctx context.Context, emit func(Event), call ToolCall) (
 			result = `{"ok":false,"error":"no prior stage handoff"}`
 		}
 	case call.Name == "load_skill":
+		a.skillLoads++
 		result = a.loadSkill(call.Arguments)
+	case call.Name == "review_state":
+		// Most review_state calls return exactly what the worker already saw; the
+		// answer is large and the turn is wasted.
+		key := stateFingerprint(a.tools.Snapshot())
+		if a.stateCalls > 0 && key == a.lastStateKey {
+			result = `{"ok":true,"message":"状态与上次 review_state 完全一致：没有新文件、新漏洞或新待办。请继续 read_file / search_content，或用 report_finding 提交证据。"}`
+			break
+		}
+		a.lastStateKey = key
+		a.stateCalls++
+		full, _ := a.tools.CallWithFullResult(ctx, call.Name, call.Arguments)
+		result = full
 	case call.Name == "audit_plan_done":
 		result = a.auditPlanDone(call.Arguments)
 	case call.Name == "verify_finding":

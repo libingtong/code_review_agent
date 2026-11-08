@@ -73,3 +73,30 @@ func TestReadHandoffIsCapped(t *testing.T) {
 		t.Fatalf("handoff re-read must return a bounded excerpt: %s", out)
 	}
 }
+
+// 93 load_skill and 150 review_state calls in 23 minutes while only 3 findings were
+// filed: both meta tools need a bound.
+func TestMetaToolsAreBounded(t *testing.T) {
+	team := newTestTeam(t, &noticeClient{})
+	team.mu.Lock()
+	team.createStageLocked(phaseRecon)
+	team.mu.Unlock()
+	a := team.workers[0].agent
+	a.phase = phaseAudit
+	a.turn = 10
+	a.skillLoads = maxSkillLoads
+	if msg := a.phaseToolCorrection("load_skill"); !strings.Contains(msg, "浪费回合") {
+		t.Fatalf("skill loading must be capped: %q", msg)
+	}
+
+	// The first review_state returns the board; an unchanged second call is answered
+	// with a one-liner.
+	first, _ := a.callTool(context.Background(), func(Event) {}, ToolCall{Name: "review_state", Arguments: []byte(`{}`)})
+	if !strings.Contains(first, "files") && !strings.Contains(first, "文件") {
+		t.Fatalf("first review_state must return the board: %s", first[:80])
+	}
+	second, _ := a.callTool(context.Background(), func(Event) {}, ToolCall{Name: "review_state", Arguments: []byte(`{}`)})
+	if !strings.Contains(second, "完全一致") {
+		t.Fatalf("unchanged review_state must be short-circuited: %s", second)
+	}
+}
