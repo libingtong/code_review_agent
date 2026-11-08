@@ -36,6 +36,7 @@ func main() {
 	auditDir := flag.String("dir", "", "directory to audit")
 	check := flag.Bool("check", false, "print provider/quota/schedule/queue status and exit")
 	headless := flag.Bool("run", false, "headless: audit -dir, write session/report, then exit")
+	maxMinutes := flag.Int("max-minutes", 0, "with -run: stop after N minutes (0 = run until interrupted)")
 	version := flag.Bool("version", false, "print build version and exit")
 	flag.Parse()
 	if *version {
@@ -159,7 +160,7 @@ func main() {
 	}
 
 	if *headless {
-		os.Exit(runHeadless(cfg, runner, gate, *auditDir))
+		os.Exit(runHeadless(cfg, runner, gate, *auditDir, *maxMinutes))
 	}
 
 	view := tui.New(runner, cfg, *auditDir)
@@ -176,7 +177,7 @@ func main() {
 // runHeadless audits without the TUI: the same team, the same session/report
 // artifacts, but events go to stderr. It exists so a scan can be started from a
 // script (or by an agent) and its log inspected afterwards.
-func runHeadless(cfg config.Config, team *agent.Team, gate *schedule.Gate, dir string) int {
+func runHeadless(cfg config.Config, team *agent.Team, gate *schedule.Gate, dir string, maxMinutes int) int {
 	if strings.TrimSpace(dir) == "" {
 		dir = cfg.Workspace
 	}
@@ -201,6 +202,14 @@ func runHeadless(cfg config.Config, team *agent.Team, gate *schedule.Gate, dir s
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	if maxMinutes > 0 {
+		// Infinite mode has no end_audit tool, so a headless scan needs its own cap;
+		// without it the run only stops when someone interrupts it.
+		var stopDeadline context.CancelFunc
+		ctx, stopDeadline = context.WithTimeout(ctx, time.Duration(maxMinutes)*time.Minute)
+		defer stopDeadline()
+		fmt.Fprintf(os.Stderr, "时间上限：%d 分钟\n", maxMinutes)
+	}
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
