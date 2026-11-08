@@ -63,13 +63,16 @@ type Todo struct {
 }
 
 type Snapshot struct {
-	Todos     []Todo           `json:"todos"`
-	Findings  []Finding        `json:"findings"`
-	Project   ProjectNote      `json:"project_note"`
-	Files     []FileReview     `json:"files"`
-	Variables []VariableReview `json:"variables"`
-	Flows     []FlowReview     `json:"flows"`
-	Audit     AuditState       `json:"audit"`
+	Todos    []Todo       `json:"todos"`
+	Findings []Finding    `json:"findings"`
+	Project  ProjectNote  `json:"project_note"`
+	Files    []FileReview `json:"files"`
+	// Candidates is the number of reviewable files in the workspace inventory, so
+	// progress can be shown before the audit scope is claimed.
+	Candidates int              `json:"candidates,omitempty"`
+	Variables  []VariableReview `json:"variables"`
+	Flows      []FlowReview     `json:"flows"`
+	Audit      AuditState       `json:"audit"`
 }
 
 type ProjectNote struct {
@@ -305,7 +308,20 @@ func IsTerminalTool(name string) bool {
 }
 
 func (r *Registry) Snapshot() Snapshot {
-	return Snapshot{Todos: r.Todos(), Findings: r.Findings(), Project: r.ProjectNote(), Files: r.Files(), Variables: r.Variables(), Flows: r.Flows(), Audit: r.Audit()}
+	return Snapshot{Todos: r.Todos(), Findings: r.Findings(), Project: r.ProjectNote(), Files: r.Files(), Candidates: r.CandidateCount(), Variables: r.Variables(), Flows: r.Flows(), Audit: r.Audit()}
+}
+
+// CandidateCount counts reviewable inventory entries (files, not directories, not
+// low-value assets): the pool the audit scope is drawn from.
+func (r *Registry) CandidateCount() int {
+	count := 0
+	for _, entry := range r.inventory {
+		if entry.LowValue || entry.Ext == "" || strings.HasSuffix(entry.Path, "/") {
+			continue
+		}
+		count++
+	}
+	return count
 }
 
 func (r *Registry) ProjectNote() ProjectNote {

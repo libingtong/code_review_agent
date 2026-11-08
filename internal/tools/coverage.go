@@ -16,6 +16,9 @@ type Coverage struct {
 	Skipped   int
 	Percent   float64
 	Remaining int
+	// Candidates is the workspace pool; shown before an audit scope exists so the
+	// operator can judge scale ("0/0" alone tells them nothing).
+	Candidates int
 }
 
 // ComputeCoverage derives coverage from the review registry. "Skipped" files are
@@ -36,6 +39,7 @@ func ComputeCoverage(snapshot Snapshot) Coverage {
 			coverage.Reviewing++
 		}
 	}
+	coverage.Candidates = snapshot.Candidates
 	coverage.Remaining = coverage.Total - coverage.Reviewed
 	if coverage.Total > 0 {
 		coverage.Percent = float64(coverage.Reviewed) * 100 / float64(coverage.Total)
@@ -55,6 +59,9 @@ func (c Coverage) ETA(elapsed time.Duration) time.Duration {
 
 // String renders the one-line summary used by the TUI header and headless logs.
 func (c Coverage) String(elapsed time.Duration) string {
+	if c.Total == 0 && c.Candidates > 0 {
+		return fmt.Sprintf("覆盖 0/0（待认领）· 候选 %d 个文件", c.Candidates)
+	}
 	line := fmt.Sprintf("覆盖 %d/%d（%.0f%%）· 剩余 %d", c.Reviewed, c.Total, c.Percent, c.Remaining)
 	if c.Reviewing > 0 {
 		line += fmt.Sprintf(" · 进行中 %d", c.Reviewing)
