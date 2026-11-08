@@ -395,3 +395,42 @@ func TestAllWorkersFailedSurfacesStageError(t *testing.T) {
 		}
 	}
 }
+
+// One failed member must not block the stage: the completed ones carry the
+// handoff (observed: 3/4 recon done + 1 failed terminated the whole run).
+func TestFailedMemberDoesNotBlockStageBarrier(t *testing.T) {
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	team.createStageLocked(phaseRecon)
+	team.mu.Lock()
+	if len(team.workers) < 2 {
+		team.mu.Unlock()
+		t.Skip("fixture needs at least two workers")
+	}
+	for index, w := range team.workers {
+		w.saved.Completed = true
+		w.saved.Status.Status = "completed"
+		if index == 0 {
+			w.saved.Completed = false
+			w.saved.Status.Status = "failed"
+		}
+	}
+	complete := true
+	failed := 0
+	for _, w := range team.workers {
+		if w.saved.Status.Phase != phaseRecon {
+			continue
+		}
+		if w.saved.Status.Status == "failed" {
+			failed++
+			continue
+		}
+		if !w.saved.Completed {
+			complete = false
+		}
+	}
+	team.mu.Unlock()
+	if !complete || failed != 1 {
+		t.Fatalf("barrier should treat the failed member as finished: complete=%v failed=%d", complete, failed)
+	}
+}

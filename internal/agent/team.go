@@ -581,10 +581,28 @@ func (t *Team) Run(ctx context.Context, input string, emit func(Event)) {
 			}
 			t.mu.Lock()
 			complete = true
+			failedInStage, totalInStage := 0, 0
 			for _, w := range t.workers {
-				if w.saved.Status.Phase == stage && !w.saved.Completed {
+				if w.saved.Status.Phase != stage {
+					continue
+				}
+				totalInStage++
+				if w.saved.Status.Status == "failed" {
+					// A dead member is finished for barrier purposes: waiting on it
+					// would stall the whole audit forever (observed: 3/4 recon done,
+					// 1 failed → run terminated with zero output).
+					failedInStage++
+					continue
+				}
+				if !w.saved.Completed {
 					complete = false
 				}
+			}
+			if failedInStage > 0 && failedInStage == totalInStage {
+				// Nobody survived: keep the dead-run detection below.
+				complete = false
+			} else if complete && failedInStage > 0 {
+				applog.L().Warnf("%s 阶段有 %d/%d 个成员失败，其余已完成；按现有产出继续", stage, failedInStage, totalInStage)
 			}
 			if complete && stage == phaseRecon {
 				// Reconnaissance hands off candidates; it does not prove them first.
