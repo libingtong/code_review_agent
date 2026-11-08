@@ -69,6 +69,8 @@ type Logger struct {
 	keep    int
 	dump    bool
 	size    int64
+	// lastCheck throttles the "did someone delete my log file" stat.
+	lastCheck time.Time
 }
 
 var (
@@ -193,8 +195,20 @@ func (l *Logger) logf(level Level, format string, args ...any) {
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.file == nil || level > l.level {
+	if level > l.level {
 		return
+	}
+	if l.file == nil {
+		return
+	}
+	// A log file deleted out from under us (manual cleanup, logrotate) would keep
+	// receiving writes into an unlinked inode: invisible but growing. Detect it and
+	// start a fresh file instead of losing the run's diagnostics.
+	if time.Since(l.lastCheck) > 5*time.Second {
+		l.lastCheck = time.Now()
+		if _, err := os.Stat(l.path); os.IsNotExist(err) {
+			_ = l.openFile()
+		}
 	}
 	line := fmt.Sprintf("%s %-5s %s\n", time.Now().Format("2006-01-02T15:04:05.000-07:00"), level.String(), Redact(fmt.Sprintf(format, args...)))
 	n, err := l.file.WriteString(line)

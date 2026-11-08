@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"code-review-agent/internal/config"
 )
@@ -138,5 +139,38 @@ func TestDumpJSONIsSafeUnderConcurrency(t *testing.T) {
 		if err := json.Unmarshal(data, &parsed); err != nil {
 			t.Fatalf("corrupt dump %s: %v", path, err)
 		}
+	}
+}
+
+// A log file deleted while the process runs must be recreated, otherwise every
+// later line goes into an unlinked inode and the run's diagnostics are lost.
+func TestLoggerRecreatesDeletedFile(t *testing.T) {
+	dir := t.TempDir()
+	cfg := testConfig(dir)
+	logger, err := Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer logger.Close()
+	logger.Infof("第一行")
+	first := logger.Path()
+	if err := os.Remove(first); err != nil {
+		t.Fatal(err)
+	}
+	// Skip the stat throttle so the recovery path runs immediately.
+	logger.mu.Lock()
+	logger.lastCheck = time.Time{}
+	logger.mu.Unlock()
+	logger.Infof("删掉之后的行")
+	second := logger.Path()
+	if _, err := os.Stat(second); err != nil {
+		t.Fatalf("log file not recreated after deletion: %v", err)
+	}
+	data, err := os.ReadFile(second)
+	if err != nil {
+		t.Fatalf("new log file missing: %v", err)
+	}
+	if !strings.Contains(string(data), "删掉之后的行") {
+		t.Fatalf("new file does not carry new lines: %s", data)
 	}
 }
