@@ -89,10 +89,24 @@ func (t *Team) pendingIRCLocked(id string) bool {
 }
 
 func (t *Team) stagePendingIRCLocked(stage string) bool {
-	for _, m := range t.ircMessages {
-		if m.Stage == stage && (m.State == "queued" || m.State == "delivered") {
-			return true
+	// A message addressed to a dead member can never be answered. Counting it as
+	// pending starved the stage barrier indefinitely: with 2/4 recon members failed,
+	// the two survivors had submitted their handoff but the barrier kept waiting for
+	// replies that would never come.
+	dead := map[string]bool{}
+	for _, w := range t.workers {
+		if w.saved.Status.Phase == stage && w.saved.Status.Status == "failed" {
+			dead[w.saved.Status.ID] = true
 		}
+	}
+	for _, m := range t.ircMessages {
+		if m.Stage != stage || (m.State != "queued" && m.State != "delivered") {
+			continue
+		}
+		if dead[m.AgentID] {
+			continue
+		}
+		return true
 	}
 	return false
 }
@@ -573,6 +587,8 @@ func (t *Team) waitStageIdle(ctx context.Context, stage string) bool {
 	for {
 		t.mu.Lock()
 		busy := t.stagePendingIRCLocked(stage) || t.ircPublishing > 0
+		// Recon hands off as soon as every survivor has submitted: answers to IRC
+		// questions about the map belong to the audit handoff, not to the barrier.
 		allReconComplete := stage == phaseRecon
 		for _, w := range t.workers {
 			if w.saved.Status.Phase == stage && !w.saved.Completed {

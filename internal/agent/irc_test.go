@@ -340,3 +340,45 @@ func TestGenerationCaptureRetainsActivityAndImmutableStatus(t *testing.T) {
 		t.Fatal("request start fabricated activity or retained prior excerpt")
 	}
 }
+
+// A pending message addressed to a dead member used to keep the stage barrier
+// waiting forever: 2/4 recon members failed, the survivors had already submitted,
+// and the run sat in recon with an empty report.
+func TestStagePendingIRCIgnoresDeadRecipients(t *testing.T) {
+	team := &Team{}
+	team.workers = []*teamWorker{
+		{saved: workerSession{Status: WorkerStatus{ID: "recon-1", Phase: phaseRecon, Status: "failed"}}},
+		{saved: workerSession{Status: WorkerStatus{ID: "recon-2", Phase: phaseRecon, Status: "running"}}},
+	}
+	team.ircMessages = []IRCMessage{{ID: 1, Stage: phaseRecon, AgentID: "recon-1", State: "delivered"}}
+	if team.stagePendingIRCLocked(phaseRecon) {
+		t.Fatal("a dead recipient's message must not block the barrier")
+	}
+	team.ircMessages = append(team.ircMessages, IRCMessage{ID: 2, Stage: phaseRecon, AgentID: "recon-2", State: "queued"})
+	if !team.stagePendingIRCLocked(phaseRecon) {
+		t.Fatal("a living recipient's message must still count as pending")
+	}
+}
+
+// A completed member woken only to answer IRC replies in prose far more often than
+// it calls worker_irc_reply; that prose must become the reply instead of burning the
+// protocol-failure budget and waking the member again.
+func TestSynthesizeIRCReplyFromProse(t *testing.T) {
+	agent := &Agent{ircOnly: true, ircPending: func() []IRCMessage {
+		return []IRCMessage{{ID: 7, State: "delivered"}}
+	}}
+	call, ok := agent.synthesizeIRCReply("<think>plan</think>证据见 UserController.java:42")
+	if !ok || call.Name != "worker_irc_reply" {
+		t.Fatalf("prose reply not synthesized: ok=%v call=%+v", ok, call)
+	}
+	if !strings.Contains(call.Arguments, `"message_id":7`) || !strings.Contains(call.Arguments, "UserController.java:42") {
+		t.Fatalf("arguments lost the message id or content: %s", call.Arguments)
+	}
+	if _, ok := agent.synthesizeIRCReply("   "); ok {
+		t.Fatal("empty prose must not become a reply")
+	}
+	agent.ircPending = func() []IRCMessage { return []IRCMessage{{ID: 1}, {ID: 2}} }
+	if _, ok := agent.synthesizeIRCReply("ambiguous"); ok {
+		t.Fatal("ambiguous pending set must not be answered by synthesis")
+	}
+}

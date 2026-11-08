@@ -672,7 +672,10 @@ func TestAuditNudgeRestrictsToolsBeforeClaiming(t *testing.T) {
 
 // A recon handoff with too few files is rejected: a thin map produces a shallow
 // audit (36-file map → 5 findings, 5-file map → 0 findings).
-func TestAuditPlanRejectsThinMap(t *testing.T) {
+// A thin model map used to be rejected, which only taught the model to retry and
+// burn its budget. The scope is now topped up from the deterministic shortlist, so
+// the audit stage always has enough high-signal files.
+func TestAuditPlanTopsUpThinMap(t *testing.T) {
 	team := newTestTeam(t, nil)
 	defer team.Close()
 	team.createStageLocked(phaseRecon)
@@ -697,15 +700,28 @@ func TestAuditPlanRejectsThinMap(t *testing.T) {
 		"summary": "s", "audit_map": "m", "execute_instructions": "e",
 		"audit_files": []string{"a.go"},
 	})
-	if out := a.auditPlanDone(args); !strings.Contains(out, "少于要求的下限") {
-		t.Fatalf("thin map must be rejected, got %s", out)
+	out := a.auditPlanDone(args)
+	if !strings.Contains(out, `"ok": true`) {
+		t.Fatalf("thin map must still hand off, got %s", out)
+	}
+	if a.plan == nil || len(a.plan.AuditFiles) != 4 {
+		t.Fatalf("thin map must be topped up with every available file, got %+v", a.plan)
+	}
+	if a.plan.AuditFiles[0] != "a.go" {
+		t.Fatalf("model pick must stay first, got %v", a.plan.AuditFiles)
 	}
 
+	// A map that already meets the target must not be padded further.
+	var full []string
+	for _, name := range []string{"a.go", "b.go", "c.go", "d.go"} {
+		full = append(full, name)
+	}
 	args, _ = json.Marshal(map[string]any{
 		"summary": "s", "audit_map": "m", "execute_instructions": "e",
-		"audit_files": []string{"a.go", "b.go", "c.go"},
+		"audit_files": full,
 	})
-	if out := a.auditPlanDone(args); strings.Contains(out, "少于要求的下限") {
-		t.Fatalf("map at the limit must pass, got %s", out)
+	_ = a.auditPlanDone(args)
+	if len(a.plan.AuditFiles) != len(full) {
+		t.Fatalf("full map must not be padded: %v", a.plan.AuditFiles)
 	}
 }

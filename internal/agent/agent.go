@@ -526,6 +526,29 @@ func reconForumTool(name string) bool {
 // 245 list_files calls and never reached audit_plan_done, so the audit stage would
 // have started from an empty map. Pacing starts at half the budget, while there is
 // still room to widen the file list instead of submitting too late or too thin.
+
+// synthesizeIRCReply turns a prose answer into the IRC reply the protocol expects.
+// Only used when exactly one message is pending, so the reply cannot be attributed
+// to the wrong question.
+func (a *Agent) synthesizeIRCReply(content string) (llm.FunctionCall, bool) {
+	text := strings.TrimSpace(removeThinkBlocks(content))
+	if text == "" || a.ircPending == nil {
+		return llm.FunctionCall{}, false
+	}
+	pending := a.ircPending()
+	if len(pending) != 1 || pending[0].ID == 0 {
+		return llm.FunctionCall{}, false
+	}
+	if len(text) > 4000 {
+		text = text[:4000]
+	}
+	arguments, err := json.Marshal(map[string]any{"message_id": pending[0].ID, "content": text})
+	if err != nil {
+		return llm.FunctionCall{}, false
+	}
+	return llm.FunctionCall{CallID: fmt.Sprintf("irc-reply-%d", pending[0].ID), Name: "worker_irc_reply", Arguments: string(arguments)}, true
+}
+
 func (a *Agent) reconPacing() (int, string) {
 	limit := a.cfg.Agent.MaxTurnsPerStage
 	if limit <= 0 {
@@ -663,16 +686,6 @@ func (a *Agent) auditPlanDone(raw json.RawMessage) string {
 		return string(data)
 	}
 	applied := a.tools.ApplyAuditScope(args.AuditFiles)
-	if minimum := a.cfg.Agent.MinAuditFiles; minimum > 0 && len(applied) < minimum {
-		// A thin map makes the audit stage shallow: the first successful round found 5
-		// vulnerabilities from a 36-file map, while later 5-file maps produced zero.
-		message := fmt.Sprintf("audit_files 只有 %d 个，少于要求的下限 %d：侦察交接必须给出足够的待审文件。用 list_files / git_inspect / search_content 快速铺开（入口、鉴权、DAO、上传、模板、配置），不要只挑几个文件深读。", len(applied), minimum)
-		if samples := a.tools.SampleInventoryPaths(5); len(samples) > 0 {
-			message += " 可直接使用的示例：" + strings.Join(samples, "、")
-		}
-		data, _ := json.MarshalIndent(tools.Result{OK: false, Error: message}, "", "  ")
-		return string(data)
-	}
 	if len(applied) == 0 {
 		// Spell out valid paths: without examples the model retries the same wrong
 		// names until the recon budget runs out.
@@ -683,10 +696,57 @@ func (a *Agent) auditPlanDone(raw json.RawMessage) string {
 		data, _ := json.MarshalIndent(tools.Result{OK: false, Error: message}, "", "  ")
 		return string(data)
 	}
-	args.AuditFiles = applied
+	// The map must not depend on how diligent one model happens to be: the first
+	// round found 5 vulnerabilities from a 21-file map, later thin maps produced
+	// zero. Top the scope up with the deterministic high-signal shortlist instead of
+	// rejecting the handoff (rejection only taught the model to retry and burn out).
+	seeded := a.seedAuditScope(applied)
+	args.AuditFiles = append(append([]string{}, applied...), seeded...)
 	a.plan = &args
-	data, _ := json.MarshalIndent(tools.Result{OK: true, Data: args, Message: "侦察交接已提交；等待其余侦察 Agent 完成后启动审计团队"}, "", "  ")
+	message := "侦察交接已提交；等待其余侦察 Agent 完成后启动审计团队"
+	if len(seeded) > 0 {
+		message = fmt.Sprintf("侦察交接已提交（模型给出 %d 个文件，系统按风险关键词补入 %d 个，合计 %d 个）；等待其余侦察 Agent 完成后启动审计团队", len(applied), len(seeded), len(args.AuditFiles))
+	}
+	data, _ := json.MarshalIndent(tools.Result{OK: true, Data: args, Message: message}, "", "  ")
 	return string(data)
+}
+
+// auditScopeTarget is how many files the audit scope should hold. Enough to cover
+// the entry points, auth layer, DAO and upload paths; small enough that agents with
+// a 60-minute window can actually read them.
+func auditScopeTarget(minimum int) int {
+	target := minimum * 3
+	if target < 24 {
+		target = 24
+	}
+	if target > 32 {
+		target = 32
+	}
+	return target
+}
+
+// seedAuditScope tops a thin model map up to auditScopeTarget with the highest
+// signal inventory files, skipping anything the model already selected.
+func (a *Agent) seedAuditScope(applied []string) []string {
+	target := auditScopeTarget(a.cfg.Agent.MinAuditFiles)
+	if missing := target - len(applied); missing > 0 {
+		chosen := map[string]bool{}
+		for _, file := range applied {
+			chosen[file] = true
+		}
+		var picks []string
+		for _, candidate := range a.tools.SuggestAuditFiles(missing+len(applied), 4) {
+			if chosen[candidate] {
+				continue
+			}
+			picks = append(picks, candidate)
+			if len(picks) >= missing {
+				break
+			}
+		}
+		return a.tools.SeedAuditScope(picks)
+	}
+	return nil
 }
 
 func auditPlanAccepted(result string) bool {
@@ -926,6 +986,15 @@ func (a *Agent) chatStream(ctx context.Context, emit func(Event)) (llm.ToolRespo
 					Arguments: "{}",
 				}}
 				emit(Event{Kind: "info", Content: "管理员本回合只有文字回复，按 moderator_idle 处理"})
+			}
+		}
+		if err == nil && len(response.Calls) == 0 && a.ircOnly {
+			// A completed worker woken only to answer IRC tends to reply in prose.
+			// Counting that as a protocol failure burned the failure budget and woke the
+			// same member again while the stage barrier waited for it.
+			if call, ok := a.synthesizeIRCReply(response.Content); ok {
+				response.Calls = []llm.FunctionCall{call}
+				emit(Event{Kind: "info", Content: "已完成成员用文字回答了 IRC，按 worker_irc_reply 处理"})
 			}
 		}
 		if err == nil && len(response.Calls) == 0 {
