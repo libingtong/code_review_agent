@@ -468,10 +468,13 @@ func (a *Agent) phaseToolCorrection(name string) string {
 		// Once the recon budget is spent, only submission remains: the model must
 		// finish with what it has instead of reading one more file forever.
 		if limit := a.cfg.Agent.MaxTurnsPerStage; limit > 0 && a.turn > limit {
-			if name == "audit_plan_done" || name == "read_tool_buffer" {
+			// Only submission remains. read_tool_buffer is deliberately excluded:
+			// leaving it open let workers keep paging old results until they were
+			// killed at limit+grace without ever submitting (3 of 4 last round).
+			if name == "audit_plan_done" {
 				return ""
 			}
-			return "侦察预算已用尽：现在只能调用 audit_plan_done 提交已有地图与文件清单。"
+			return "侦察预算已用尽：现在只能调用 audit_plan_done 提交已有地图与文件清单，其他工具全部不可用。"
 		}
 		switch name {
 		case "review_state", "list_files", "read_file", "search_content", "search_context", "git_inspect", "todo_create", "todo_update", "file_review_update", "project_note_update", "audit_plan_done", "load_skill":
