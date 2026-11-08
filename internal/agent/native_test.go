@@ -646,3 +646,25 @@ func TestModeratorProseBecomesIdle(t *testing.T) {
 		t.Fatalf("expected synthetic moderator_idle, got %+v", response.Calls)
 	}
 }
+
+// An audit worker that never claims a file must be pushed into reading code
+// instead of chatting in the forum forever.
+func TestAuditNudgeRestrictsToolsBeforeClaiming(t *testing.T) {
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	team.cfg.Agent.AuditNudgeTurns = 10
+	a := newWorker(team.cfg, team.prompts, team.client, team.compressClient, team.registry.Fork(), "audit-1", phaseAudit, team.board)
+	defer a.tools.Close()
+	a.turn = 12
+
+	if reason := a.toolPermission("forum_read"); reason == "" {
+		t.Fatal("forum_read should be blocked before the first file claim")
+	}
+	if reason := a.toolPermission("read_file"); reason != "" {
+		t.Fatalf("read_file must stay available: %s", reason)
+	}
+	a.fileReviewCalls = 1
+	if reason := a.toolPermission("forum_read"); reason != "" {
+		t.Fatalf("after claiming a file the guard should lift: %s", reason)
+	}
+}

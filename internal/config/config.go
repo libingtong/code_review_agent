@@ -111,7 +111,9 @@ type AgentConfig struct {
 	MaxTurns int `yaml:"max_turns"`
 	// MaxTurnsPerStage bounds the recon stage even in infinite mode: without it a
 	// worker can read files for hundreds of turns and never submit its map.
-	MaxTurnsPerStage     int     `yaml:"max_turns_per_stage"`
+	MaxTurnsPerStage int `yaml:"max_turns_per_stage"`
+	// AuditNudgeTurns forces a worker that never claimed a file to start auditing.
+	AuditNudgeTurns      int     `yaml:"audit_nudge_turns"`
 	SessionDir           string  `yaml:"session_dir"`
 	LogSession           bool    `yaml:"log_session"`
 	LogSessionDir        string  `yaml:"log_session_dir"`
@@ -215,6 +217,9 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.Agent.ForumWaitSeconds < 1 || cfg.Agent.ForumWaitSeconds > 120 {
 		return Config{}, fmt.Errorf("agent.forum_wait_seconds must be between 1 and 120")
+	}
+	if cfg.Agent.AuditNudgeTurns < 5 || cfg.Agent.AuditNudgeTurns > 500 {
+		return Config{}, fmt.Errorf("agent.audit_nudge_turns must be between 5 and 500")
 	}
 	if cfg.Agent.MaxTurnsPerStage < 10 || cfg.Agent.MaxTurnsPerStage > 2000 {
 		return Config{}, fmt.Errorf("agent.max_turns_per_stage must be between 10 and 2000")
@@ -371,6 +376,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Agent.MaxToolResultChars == 0 {
 		cfg.Agent.MaxToolResultChars = 12000
+	}
+	if cfg.Agent.AuditNudgeTurns == 0 {
+		cfg.Agent.AuditNudgeTurns = 30
 	}
 	if cfg.Agent.MaxTurnsPerStage == 0 {
 		cfg.Agent.MaxTurnsPerStage = 80
