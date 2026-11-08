@@ -1,8 +1,10 @@
 package tools
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -105,5 +107,35 @@ func TestSeedAuditScopeMarksProvenance(t *testing.T) {
 	}
 	if snapshot.Files[0].Status != "reviewing" {
 		t.Fatalf("seeded file must be part of the scope: %+v", snapshot.Files[0])
+	}
+}
+
+// Coverage used to sit at 0/48 while agents had already read 41 files, because
+// claiming was a separate optional call. Reading must move the number.
+func TestReadFileMarksScopedAndIncidentalFilesReviewing(t *testing.T) {
+	registry := seedWorkspace(t, []string{
+		"src/main/java/app/web/UserController.java",
+		"src/main/java/app/web/OrderController.java",
+	})
+	registry.PlanAuditScope([]string{"src/main/java/app/web/UserController.java"})
+
+	for _, path := range []string{"src/main/java/app/web/UserController.java", "src/main/java/app/web/OrderController.java"} {
+		out := registry.Call("read_file", json.RawMessage(`{"path":"`+path+`","limit":5}`))
+		if !strings.Contains(out, `"ok": true`) {
+			t.Fatalf("read %s failed: %s", path, out)
+		}
+	}
+	statuses := map[string]string{}
+	for _, file := range registry.Snapshot().Files {
+		statuses[file.Path] = file.Status
+	}
+	for _, want := range []string{"src/main/java/app/web/UserController.java", "src/main/java/app/web/OrderController.java"} {
+		if statuses[want] != "reviewing" {
+			t.Fatalf("read file not marked reviewing: %v", statuses)
+		}
+	}
+	coverage := ComputeCoverage(registry.Snapshot())
+	if coverage.Total != 2 || coverage.Reviewing != 2 {
+		t.Fatalf("coverage = %+v", coverage)
 	}
 }

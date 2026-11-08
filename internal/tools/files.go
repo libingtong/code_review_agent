@@ -148,7 +148,34 @@ func (r *Registry) readFile(raw json.RawMessage) Result {
 	if err := scanner.Err(); err != nil {
 		return Result{OK: false, Error: err.Error()}
 	}
+	// Reading a file *is* the audit act; without this the coverage line sat at 0/48
+	// while agents had already read 41 files, because claiming was a separate,
+	// optional tool call they kept postponing.
+	r.markRead(resolvedPath)
 	return Result{OK: true, Data: readFileResult{Path: resolvedPath, Offset: args.Offset, Limit: args.Limit, TotalLines: lineNo, Lines: lines}, Trunc: truncated}
+}
+
+// markRead records that a file is being audited. Files outside the plan join the
+// scope too: an incidental read is real coverage, and hiding it made the progress
+// line lie.
+func (r *Registry) markRead(path string) {
+	path = normalizeInventoryPath(path)
+	if path == "" {
+		return
+	}
+	for i := range r.files {
+		if r.files[i].Path != path {
+			continue
+		}
+		if r.files[i].Status == "" || r.files[i].Status == "pending" {
+			r.files[i].Status = "reviewing"
+		}
+		return
+	}
+	if !r.inventoryHasPath(path) {
+		return
+	}
+	r.files = append(r.files, FileReview{Path: path, Status: "reviewing", Note: "审计中按需读取"})
 }
 
 func (r *Registry) resolveReadableFile(input string) (string, string, error) {
