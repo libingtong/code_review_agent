@@ -481,6 +481,7 @@ func (t *Team) createStageLocked(stage string) {
 				// self-organized scope the first four minutes produced 101 forum_read,
 				// 41 read_handoff, 40 forum_roster and only 8 read_file calls.
 				slice := roundRobin(t.auditScope, i, count)
+				a.assigned = slice
 				if len(slice) > 0 {
 					a.tools.PlanAuditScope(slice)
 					a.assignment = assignment + fmt.Sprintf("\n\n系统已把侦察地图按文件切好分给你（第 %d/%d 份，共 %d 个文件）：先用 file_review_update 认领这些文件，再逐个 read_file/search_content 审计并按需 report_finding。分工已确定，不需要为重新讨论分工反复读论坛；遇到跨文件链路再用 forum_post 简短同步。你负责：\n- %s", i+1, count, len(slice), strings.Join(slice, "\n- "))

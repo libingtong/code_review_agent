@@ -62,7 +62,11 @@ type Agent struct {
 	handoffReads int
 	// skillLoads and stateCalls bound the two meta tools that dominated turns
 	// (93 load_skill + 150 review_state in 23 minutes while only 3 findings were filed).
-	skillLoads   int
+	skillLoads int
+	// assigned is this worker's slice of the recon map. It is the checklist that must
+	// actually get read: audit-3 left HybridEncryption.java "pending" for 35 minutes
+	// while reading four other files.
+	assigned     []string
 	stateCalls   int
 	lastStateKey string
 	// stageNudge records how far the recon pacing ladder has advanced: 0 none,
@@ -1262,10 +1266,50 @@ func (a *Agent) nudgeForumPost() {
 	applog.L().Infof("%s 未发帖，已注入一次分工提醒", a.id)
 }
 
+// assignmentDirective is the marker used to replace (not stack) the checklist note.
+const assignmentDirective = "【分配清单】"
+
+// reinforceAssignment keeps this worker's own slice in front of the model. Guidance
+// in the system prompt is not enough: a 35-minute audit stage finished with the
+// assigned crypto file still "pending" while the worker read four unrelated files.
+func (a *Agent) reinforceAssignment() {
+	if a.phase != phaseAudit || a.completed || len(a.assigned) == 0 {
+		return
+	}
+	status := map[string]string{}
+	for _, file := range a.tools.Snapshot().Files {
+		status[file.Path] = file.Status
+	}
+	var pending []string
+	for _, path := range a.assigned {
+		if state, ok := status[path]; !ok || state == "pending" {
+			pending = append(pending, path)
+		}
+	}
+	kept := a.messages[:0]
+	for _, message := range a.messages {
+		if message.Type == "" && strings.HasPrefix(message.Content, assignmentDirective) {
+			continue
+		}
+		kept = append(kept, message)
+	}
+	a.messages = kept
+	if len(pending) == 0 {
+		return
+	}
+	preview := pending
+	if len(preview) > 3 {
+		preview = preview[:3]
+	}
+	text := fmt.Sprintf("%s你分配到的文件里还有 %d 个没读：%s。请先 read_file 这些文件（读完再考虑其它路径），发现证据立刻 report_finding。", assignmentDirective, len(pending), strings.Join(preview, "、"))
+	a.addMessage(llm.Message{Role: llm.RoleUser, Content: text})
+}
+
 func (a *Agent) chatStreamOnce(ctx context.Context, emit func(Event)) (llm.ToolResponse, error) {
 	a.normalizeToolHistory()
 	a.repairToolHistory()
 	a.nudgeForumPost()
+	a.reinforceAssignment()
 	if a.reducedReasoning {
 		ctx = llm.WithReducedReasoning(ctx)
 	}

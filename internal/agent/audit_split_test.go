@@ -2,8 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"code-review-agent/internal/llm"
 )
 
 func TestAuditStagePreAssignsScopeSlices(t *testing.T) {
@@ -99,4 +102,59 @@ func TestMetaToolsAreBounded(t *testing.T) {
 	if !strings.Contains(second, "完全一致") {
 		t.Fatalf("unchanged review_state must be short-circuited: %s", second)
 	}
+}
+
+// A 35-minute stage ended with audit-3's assigned HybridEncryption.java still
+// "pending": the assignment lived only in the system prompt. The checklist now rides
+// along with every request and is replaced, never stacked.
+func TestReinforceAssignmentKeepsChecklistInFront(t *testing.T) {
+	team := newTestTeam(t, &noticeClient{})
+	team.mu.Lock()
+	team.createStageLocked(phaseRecon)
+	team.mu.Unlock()
+	a := team.workers[0].agent
+	a.phase = phaseAudit
+	a.assigned = []string{"entry1.go", "entry2.go"}
+
+	a.reinforceAssignment()
+	if got := countAssignmentDirectives(a.messages); got != 1 {
+		t.Fatalf("directive count = %d, want 1", got)
+	}
+	if !strings.Contains(lastAssignmentDirective(a.messages), "entry1.go") {
+		t.Fatalf("directive must name the unread file: %q", lastAssignmentDirective(a.messages))
+	}
+
+	a.reinforceAssignment()
+	if got := countAssignmentDirectives(a.messages); got != 1 {
+		t.Fatalf("directive stacked instead of replaced: %d", got)
+	}
+
+	// Once both files are read, the checklist disappears.
+	a.tools.PlanAuditScope(a.assigned)
+	for _, path := range a.assigned {
+		a.tools.Call("read_file", json.RawMessage(`{"path":"`+path+`","limit":5}`))
+	}
+	a.reinforceAssignment()
+	if got := countAssignmentDirectives(a.messages); got != 0 {
+		t.Fatalf("checklist must clear when everything is read: %d", got)
+	}
+}
+
+func countAssignmentDirectives(messages []llm.Message) int {
+	count := 0
+	for _, message := range messages {
+		if message.Type == "" && strings.HasPrefix(message.Content, assignmentDirective) {
+			count++
+		}
+	}
+	return count
+}
+
+func lastAssignmentDirective(messages []llm.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Type == "" && strings.HasPrefix(messages[i].Content, assignmentDirective) {
+			return messages[i].Content
+		}
+	}
+	return ""
 }
