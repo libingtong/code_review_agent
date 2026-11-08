@@ -259,32 +259,36 @@ func (a *Agent) executeNativeTool(ctx context.Context, emit func(Event), call ll
 	return full
 }
 
+// validateNativeHistory accepts a *group* of calls followed by their outputs: one
+// response may carry several tool calls (the batch path executes the first and
+// records an explicit "not executed" result for the rest), and rejecting that shape
+// made every session containing a batch impossible to resume.
 func validateNativeHistory(messages []llm.Message) error {
 	seen := make(map[string]bool)
-	pending := ""
+	pending := make(map[string]bool)
 	for _, message := range messages {
 		switch message.Type {
 		case "function_call":
-			if pending != "" || seen[message.CallID] {
-				return fmt.Errorf("native history contains duplicate or unpaired function call")
+			if seen[message.CallID] {
+				return fmt.Errorf("native history duplicates call_id %q", message.CallID)
 			}
 			if err := validateNativeResponse(llm.ToolResponse{Calls: []llm.FunctionCall{{CallID: message.CallID, Name: message.Name, Arguments: message.Arguments}}}, nil); err != nil {
 				return err
 			}
-			pending = message.CallID
-			seen[pending] = true
+			seen[message.CallID] = true
+			pending[message.CallID] = true
 		case "function_call_output":
-			if pending == "" || message.CallID != pending {
-				return fmt.Errorf("native history contains orphan function output")
+			if !pending[message.CallID] {
+				return fmt.Errorf("native history contains orphan function output %q", message.CallID)
 			}
-			pending = ""
+			delete(pending, message.CallID)
 		default:
-			if pending != "" {
-				return fmt.Errorf("native history interrupts a pending function call")
+			if len(pending) != 0 {
+				return fmt.Errorf("native history interrupts an unresolved function call")
 			}
 		}
 	}
-	if pending != "" {
+	if len(pending) != 0 {
 		return fmt.Errorf("native history ends with an unpaired function call")
 	}
 	return nil

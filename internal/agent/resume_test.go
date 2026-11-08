@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -120,5 +121,24 @@ func TestResetBudgetUsageClearsSavedCounters(t *testing.T) {
 	status := team.BudgetStatus()
 	if status.Elapsed != 0 || status.UsedTokens != 0 || status.StopReason != "" {
 		t.Fatalf("budget not rebased: %+v", status)
+	}
+}
+
+// TestLoadRealSessionIfPresent is an integration check against a session produced by
+// a real run: CR_SESSION=sessions/<ts>.json go test ./internal/agent -run RealSession
+func TestLoadRealSessionIfPresent(t *testing.T) {
+	path := os.Getenv("CR_SESSION")
+	if path == "" {
+		t.Skip("CR_SESSION 未设置")
+	}
+	team := newTestTeam(t, &noticeClient{})
+	if err := team.LoadSession(path); err != nil {
+		t.Fatalf("load %s: %v", path, err)
+	}
+	coverage := tools.ComputeCoverage(team.Snapshot())
+	t.Logf("阶段 %s · 范围 %d（已审 %d）· 漏洞 %d · 成员 %d",
+		team.Phase(), coverage.Total, coverage.Reviewed, len(team.Snapshot().Findings), len(team.Statuses()))
+	if team.Phase() == "" {
+		t.Fatal("阶段为空")
 	}
 }

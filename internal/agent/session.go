@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"code-review-agent/internal/applog"
 	"code-review-agent/internal/config"
 	"code-review-agent/internal/forum"
 	"code-review-agent/internal/llm"
@@ -62,10 +63,15 @@ func (t *Team) SaveSession(path string) error {
 	budget.Running = false
 	s.Budget = &budget
 	for _, w := range t.workers {
-		s.Workers = append(s.Workers, w.saved)
+		saved := w.saved
+		// A session saved mid-turn (cancel, interrupt, crash) can hold an unpaired
+		// call; normalizing here is what makes the file loadable on resume.
+		saved.Messages = normalizeToolHistoryMessages(saved.Messages)
+		s.Workers = append(s.Workers, saved)
 	}
 	if t.moderator != nil {
 		saved := t.moderator.saved
+		saved.Messages = normalizeToolHistoryMessages(saved.Messages)
 		s.Moderator = &saved
 	}
 	s.Revocations = append([]FindingRevocation(nil), t.revocations...)
@@ -261,8 +267,15 @@ func (t *Team) LoadSession(path string) error {
 			}
 		}
 		if err := validateNativeHistory(saved.Messages); err != nil {
-			newRegistry.Close()
-			return fmt.Errorf("invalid native history for %s: %w", saved.Status.ID, err)
+			// Older sessions were written before save-time normalization; repair the
+			// pairing instead of refusing to resume an otherwise good audit.
+			repaired := normalizeToolHistoryMessages(saved.Messages)
+			if err := validateNativeHistory(repaired); err != nil {
+				newRegistry.Close()
+				return fmt.Errorf("invalid native history for %s: %w", saved.Status.ID, err)
+			}
+			saved.Messages = repaired
+			applog.L().Warnf("会话 %s 的工具历史已修复（%s）", path, saved.Status.ID)
 		}
 		checkBoard.Register(saved.Status.ID, saved.Status.Phase)
 		if saved.Status.Name != "" {
@@ -406,6 +419,21 @@ func (t *Team) LoadSession(path string) error {
 	for _, w := range t.workers {
 		if w.agent.phase == phaseAudit {
 			w.agent.handoff = t.handoff
+		}
+	}
+	if t.phase == phaseAudit {
+		// Resuming after the handoff: the recon map is still the scope, so give the
+		// audit workers that have not claimed anything yet the same starting list
+		// instead of an empty one.
+		t.auditScope = t.reconScopeLocked()
+		if len(t.auditScope) > 0 {
+			for _, w := range t.workers {
+				if w.saved.Status.Phase != phaseAudit || len(w.agent.tools.Snapshot().Files) > 0 {
+					continue
+				}
+				w.agent.tools.PlanAuditScope(t.auditScope)
+				w.saved.Snapshot = cloneSnapshot(w.agent.tools.Snapshot())
+			}
 		}
 	}
 	t.snapshot = t.aggregateLocked()
