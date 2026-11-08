@@ -465,6 +465,8 @@ func (a *Agent) phaseToolCorrection(name string) string {
 		}
 		return "管理员只能读取源码、审查论坛并调用管理员工具；不能替普通 Agent 提交漏洞或投票结束阶段。"
 	}
+	// Audit: a worker that never claimed a file is chatting, not auditing. Push it
+	// into claiming/reading before it may touch the forum or status again.
 	if a.phase == phaseAudit {
 		if limit := a.cfg.Agent.AuditNudgeTurns; limit > 0 && a.turn > limit && a.fileReviewCalls == 0 {
 			switch name {
@@ -475,31 +477,29 @@ func (a *Agent) phaseToolCorrection(name string) string {
 			}
 			return "已经进入审计阶段 " + strconv.Itoa(a.turn) + " 回合但还没有认领任何文件：请先用 file_review_update 认领文件，再 read_file 读取源码。"
 		}
-		if forum.IsTool(name) || name == "read_tool_buffer" || name == "read_handoff" || name == "worker_irc_reply" {
-			return ""
-		}
-		if a.phase == phaseRecon {
-			// Once the recon budget is spent, only submission remains: the model must
-			// finish with what it has instead of reading one more file forever.
-			if limit := a.cfg.Agent.MaxTurnsPerStage; limit > 0 && a.turn > limit {
-				// Only submission remains. read_tool_buffer is deliberately excluded:
-				// leaving it open let workers keep paging old results until they were
-				// killed at limit+grace without ever submitting (3 of 4 last round).
-				if name == "audit_plan_done" {
-					return ""
-				}
-				return "侦察预算已用尽：现在只能调用 audit_plan_done 提交已有地图与文件清单，其他工具全部不可用。"
-			}
-			switch name {
-			case "review_state", "list_files", "read_file", "search_content", "search_context", "git_inspect", "todo_create", "todo_update", "file_review_update", "project_note_update", "audit_plan_done", "load_skill":
+	}
+	if forum.IsTool(name) || name == "read_tool_buffer" || name == "read_handoff" || name == "worker_irc_reply" {
+		return ""
+	}
+	if a.phase == phaseRecon {
+		// Once the recon budget is spent, only submission remains. read_tool_buffer is
+		// deliberately excluded: leaving it open let workers page old results until
+		// they were killed at limit+grace without ever submitting.
+		if limit := a.cfg.Agent.MaxTurnsPerStage; limit > 0 && a.turn > limit {
+			if name == "audit_plan_done" {
 				return ""
-			default:
-				return "当前处于规划建图阶段，禁止调用 " + name + "。继续建图并通过原生 audit_plan_done 提交侦察交接。"
 			}
+			return "侦察预算已用尽：现在只能调用 audit_plan_done 提交已有地图与文件清单，其他工具全部不可用。"
 		}
-		if name == "audit_plan_done" {
-			return "当前已经处于执行审计阶段，不能再次调用 audit_plan_done。请从当前原生工具定义中选择。"
+		switch name {
+		case "review_state", "list_files", "read_file", "search_content", "search_context", "git_inspect", "todo_create", "todo_update", "file_review_update", "project_note_update", "audit_plan_done", "load_skill":
+			return ""
+		default:
+			return "当前处于规划建图阶段，禁止调用 " + name + "。继续建图并通过原生 audit_plan_done 提交侦察交接。"
 		}
+	}
+	if name == "audit_plan_done" {
+		return "当前已经处于执行审计阶段，不能再次调用 audit_plan_done。请从当前原生工具定义中选择。"
 	}
 	return ""
 }
