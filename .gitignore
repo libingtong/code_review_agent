@@ -15,6 +15,7 @@ config_grok.yaml
 # ---- 生成物：审计报告与运行结果一律不入库 ----
 # 报告/结果 JSON：/export 默认写 report.json，编排器写 reports/<ID>/report.json
 *.json
+!scripts/known-findings.json
 # 测试用的 JSON 夹具仍然要能进仓库
 !internal/**/testdata/**/*.json
 report.json

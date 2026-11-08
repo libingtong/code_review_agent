@@ -1,0 +1,10 @@
+{
+  "_comment": "首轮（12:01）逐条回源码核对过的真实漏洞，用来客观衡量每轮审计质量：命中即计数，不依赖模型自述。",
+  "items": [
+    {"id": "hybrid-rsa-key", "path": "HybridEncryption.java", "line": 40, "title": "HybridEncryption 硬编码 RSA 私钥"},
+    {"id": "xss-filter-return", "path": "XssFilter.java", "line": 60, "title": "XssFilter 分支缺少 return，过滤被绕过"},
+    {"id": "recommend-sql", "path": "AiAndManualRecommendDao.java", "line": 483, "title": "SQL 字符串拼接注入"},
+    {"id": "oss-sts", "path": "OSSController.java", "line": 98, "title": "OSS STS 凭证接口越权"},
+    {"id": "oss-callback", "path": "OSSController.java", "line": 113, "title": "OSS 回调无签名校验"}
+  ]
+}
