@@ -7,6 +7,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -242,9 +243,33 @@ func rebuildClient(provider config.ProviderConfig, compress config.OpenAIConfig)
 	return llm.NewOpenAIClient(provider.OpenAI)
 }
 
+// sameEndpoint reports whether two base URLs point at the same vendor host. The
+// compression settings are derived from the *tightest* provider, so borrowing its
+// model name on a different vendor produces "model_not_found".
+func sameEndpoint(a, b string) bool {
+	host := func(raw string) string {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			return ""
+		}
+		parsed, err := url.Parse(raw)
+		if err != nil || parsed.Host == "" {
+			return raw
+		}
+		return strings.ToLower(parsed.Host)
+	}
+	left, right := host(a), host(b)
+	if left == "" || right == "" {
+		return true
+	}
+	return left == right
+}
+
 func auxClient(compress config.OpenAIConfig, source config.OpenAIConfig) *llm.OpenAIClient {
 	derived := source
-	if compress.Model != "" {
+	// Only borrow the compression model when it belongs to the same endpoint;
+	// otherwise keep the channel's own model and just take the size/effort knobs.
+	if compress.Model != "" && sameEndpoint(compress.BaseURL, source.BaseURL) {
 		derived.Model = compress.Model
 	}
 	if compress.MaxContextTokens > 0 {

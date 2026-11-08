@@ -516,3 +516,19 @@ func TestLoadSelectionIgnoresUnavailableChannel(t *testing.T) {
 		t.Fatalf("active = %q", pool.ActiveID())
 	}
 }
+
+// The compression model comes from the tightest provider; borrowing it on a
+// different vendor produced "model_not_found" on MiniMax (GLM model name).
+func TestAuxClientKeepsVendorModel(t *testing.T) {
+	compress := config.OpenAIConfig{Model: "glm-5.3", BaseURL: "https://open.bigmodel.cn/api/v1", ReasoningEffort: "medium", MaxContextTokens: 200000}
+	source := config.OpenAIConfig{Model: "MiniMax-M3.1-Flash", BaseURL: "https://api.minimax.cn/v1", APIKey: "k", MaxOutputTokens: 4096}
+	client := auxClient(compress, source)
+	if got := client.Model(); got != "MiniMax-M3.1-Flash" {
+		t.Fatalf("cross-vendor model leaked into aux client: %q", got)
+	}
+
+	sameVendor := config.OpenAIConfig{Model: "glm-5.3-flash", BaseURL: "https://open.bigmodel.cn/api/coding/paas/v4", APIKey: "k"}
+	if got := auxClient(compress, sameVendor).Model(); got != "glm-5.3" {
+		t.Fatalf("same-vendor override should apply, got %q", got)
+	}
+}

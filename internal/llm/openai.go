@@ -654,6 +654,9 @@ func (c *OpenAIClient) ChatTools(ctx context.Context, messages []Message, tools 
 	return c.chatCompletionsTools(ctx, messages, tools, emit)
 }
 
+// Model reports the model this client sends (diagnostics and tests).
+func (c *OpenAIClient) Model() string { return c.cfg.Model }
+
 func (c *OpenAIClient) useResponsesAPI() bool {
 	api := strings.TrimSpace(c.cfg.APIInterface)
 	return api == "" || strings.EqualFold(api, "responses")
