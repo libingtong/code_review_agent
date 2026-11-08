@@ -609,6 +609,16 @@ func (a *Agent) auditPlanDone(raw json.RawMessage) string {
 		return string(data)
 	}
 	applied := a.tools.ApplyAuditScope(args.AuditFiles)
+	if minimum := a.cfg.Agent.MinAuditFiles; minimum > 0 && len(applied) < minimum {
+		// A thin map makes the audit stage shallow: the first successful round found 5
+		// vulnerabilities from a 36-file map, while later 5-file maps produced zero.
+		message := fmt.Sprintf("audit_files 只有 %d 个，少于要求的下限 %d：侦察交接必须给出足够的待审文件。用 list_files / git_inspect / search_content 快速铺开（入口、鉴权、DAO、上传、模板、配置），不要只挑几个文件深读。", len(applied), minimum)
+		if samples := a.tools.SampleInventoryPaths(5); len(samples) > 0 {
+			message += " 可直接使用的示例：" + strings.Join(samples, "、")
+		}
+		data, _ := json.MarshalIndent(tools.Result{OK: false, Error: message}, "", "  ")
+		return string(data)
+	}
 	if len(applied) == 0 {
 		// Spell out valid paths: without examples the model retries the same wrong
 		// names until the recon budget runs out.

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"code-review-agent/internal/llm"
+	"code-review-agent/internal/tools"
 )
 
 func TestNativeLoopRetriesProtocolFailuresUntilValidCall(t *testing.T) {
@@ -666,5 +667,45 @@ func TestAuditNudgeRestrictsToolsBeforeClaiming(t *testing.T) {
 	a.fileReviewCalls = 1
 	if reason := a.toolPermission("forum_read"); reason != "" {
 		t.Fatalf("after claiming a file the guard should lift: %s", reason)
+	}
+}
+
+// A recon handoff with too few files is rejected: a thin map produces a shallow
+// audit (36-file map → 5 findings, 5-file map → 0 findings).
+func TestAuditPlanRejectsThinMap(t *testing.T) {
+	team := newTestTeam(t, nil)
+	defer team.Close()
+	team.createStageLocked(phaseRecon)
+	a := team.workers[0].agent
+
+	workspace := t.TempDir()
+	for _, name := range []string{"a.go", "b.go", "c.go", "d.go"} {
+		if err := os.WriteFile(filepath.Join(workspace, name), []byte("package main\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	registry, err := tools.NewRegistry(workspace, 4096)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	a.tools.Close()
+	a.tools = registry
+	a.cfg.Agent.MinAuditFiles = 3
+
+	args, _ := json.Marshal(map[string]any{
+		"summary": "s", "audit_map": "m", "execute_instructions": "e",
+		"audit_files": []string{"a.go"},
+	})
+	if out := a.auditPlanDone(args); !strings.Contains(out, "少于要求的下限") {
+		t.Fatalf("thin map must be rejected, got %s", out)
+	}
+
+	args, _ = json.Marshal(map[string]any{
+		"summary": "s", "audit_map": "m", "execute_instructions": "e",
+		"audit_files": []string{"a.go", "b.go", "c.go"},
+	})
+	if out := a.auditPlanDone(args); strings.Contains(out, "少于要求的下限") {
+		t.Fatalf("map at the limit must pass, got %s", out)
 	}
 }
