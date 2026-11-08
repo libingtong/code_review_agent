@@ -448,6 +448,19 @@ func stageAssignment(stage string, count int) string {
 	return assignment
 }
 
+// roundRobin takes every n-th element starting at offset, so splitting a scope
+// over a team is deterministic and covers every file exactly once.
+func roundRobin(files []string, offset, count int) []string {
+	if len(files) == 0 || count <= 0 || offset < 0 {
+		return nil
+	}
+	slice := make([]string, 0, len(files)/count+1)
+	for i := offset; i < len(files); i += count {
+		slice = append(slice, files[i])
+	}
+	return slice
+}
+
 // Called only at a stage barrier, never while a worker is running.
 func (t *Team) createStageLocked(stage string) {
 	count := t.cfg.Agent.ReconAgents
@@ -464,9 +477,16 @@ func (t *Team) createStageLocked(stage string) {
 		if stage == phaseAudit {
 			a.handoff = t.handoff
 			if len(t.auditScope) > 0 {
-				// The recon map becomes the initial scope: without it coverage resets
-				// to 0/0 the moment the audit stage starts.
-				a.tools.PlanAuditScope(t.auditScope)
+				// Split the map instead of letting twelve agents negotiate it: with
+				// self-organized scope the first four minutes produced 101 forum_read,
+				// 41 read_handoff, 40 forum_roster and only 8 read_file calls.
+				slice := roundRobin(t.auditScope, i, count)
+				if len(slice) > 0 {
+					a.tools.PlanAuditScope(slice)
+					a.assignment = assignment + fmt.Sprintf("\n\n系统已把侦察地图按文件切好分给你（第 %d/%d 份，共 %d 个文件）：先用 file_review_update 认领这些文件，再逐个 read_file/search_content 审计并按需 report_finding。分工已确定，不需要为重新讨论分工反复读论坛；遇到跨文件链路再用 forum_post 简短同步。你负责：\n- %s", i+1, count, len(slice), strings.Join(slice, "\n- "))
+				} else {
+					a.assignment = assignment + "\n\n侦察地图的文件已分给其他成员。你没有固定文件：先读交接，然后复核他人报告的漏洞证据，或补审地图里没被认领的空白文件；不要反复读论坛确认分工。"
+				}
 			}
 		}
 		w := &teamWorker{agent: a, saved: workerSession{Status: WorkerStatus{ID: id, Name: t.board.Name(id), Phase: stage, Status: "pending"}, Assignment: a.assignment, Snapshot: cloneSnapshot(a.tools.Snapshot())}}

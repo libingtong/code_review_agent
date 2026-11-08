@@ -57,6 +57,9 @@ type Agent struct {
 	// fileReviewCalls counts file_review_update calls: a worker that never claims a
 	// file is only chatting in the forum, not auditing.
 	fileReviewCalls int
+	// handoffReads counts read_handoff calls: the payload is large and re-reading it
+	// wastes context.
+	handoffReads int
 	// stageNudge records how far the recon pacing ladder has advanced: 0 none,
 	// 1 half budget ("stop browsing, map files"), 2 budget spent ("submit only").
 	stageNudge int
@@ -79,6 +82,9 @@ type Agent struct {
 // stageTurnGrace is how many turns a recon worker gets after the "submit now"
 // reminder before it is stopped.
 const stageTurnGrace = 5
+
+// maxHandoffReads caps how often one worker may re-read the structured handoff.
+const maxHandoffReads = 2
 
 const (
 	phaseRecon     = "recon"
@@ -472,14 +478,20 @@ func (a *Agent) phaseToolCorrection(name string) string {
 		}
 		return "管理员只能读取源码、审查论坛并调用管理员工具；不能替普通 Agent 提交漏洞或投票结束阶段。"
 	}
-	// Audit: a worker that never claimed a file is chatting, not auditing. Push it
-	// into claiming/reading before it may touch the forum or status again.
+	// Audit: a worker that never claimed a file is chatting, not auditing. The
+	// window is the expensive resource (observed: 101 forum_read and 8 read_file in
+	// the first four minutes of an audit stage), so the guard starts after a couple
+	// of turns instead of after AuditNudgeTurns.
 	if a.phase == phaseAudit {
-		if limit := a.cfg.Agent.AuditNudgeTurns; limit > 0 && a.turn > limit && a.fileReviewCalls == 0 {
+		limit := 2
+		if configured := a.cfg.Agent.AuditNudgeTurns; configured > 0 && configured < limit {
+			limit = configured
+		}
+		if a.turn > limit && a.fileReviewCalls == 0 {
 			switch name {
 			case "file_review_update", "read_file", "search_content", "search_context", "list_files",
 				"todo_create", "todo_update", "project_note_update", "report_finding", "commit_finding",
-				"read_tool_buffer", "load_skill", "end_audit":
+				"read_tool_buffer", "load_skill", "end_audit", "review_state", "read_handoff":
 				return ""
 			}
 			return "已经进入审计阶段 " + strconv.Itoa(a.turn) + " 回合但还没有认领任何文件：请先用 file_review_update 认领文件，再 read_file 读取源码。"
@@ -626,6 +638,13 @@ func (a *Agent) callTool(ctx context.Context, emit func(Event), call ToolCall) (
 			}
 		}
 	case call.Name == "read_handoff":
+		// The handoff is a large JSON blob; re-reading it every few turns inflates
+		// context and was observed 41 times in four minutes.
+		if a.handoffReads >= maxHandoffReads {
+			result = `{"ok":false,"error":"交接已读过两遍；请直接用其中的具体路径 read_file / search_content，不要重复读取整个交接"}`
+			break
+		}
+		a.handoffReads++
 		result = a.handoff
 		if result == "" {
 			result = `{"ok":false,"error":"no prior stage handoff"}`

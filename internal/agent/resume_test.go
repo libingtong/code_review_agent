@@ -56,6 +56,7 @@ func TestReuseReconRebuildsAuditStageFromSavedMap(t *testing.T) {
 		t.Fatalf("phase = %s, want audit", restored.Phase())
 	}
 	var auditWorkers, reconWorkers int
+	slices := map[string]bool{}
 	for _, w := range restored.workers {
 		switch w.saved.Status.Phase {
 		case phaseAudit:
@@ -73,16 +74,22 @@ func TestReuseReconRebuildsAuditStageFromSavedMap(t *testing.T) {
 			for _, file := range w.agent.tools.Snapshot().Files {
 				statuses[file.Path] = file.Status
 			}
-			for _, want := range []string{"entry1.go", "entry2.go", "entry3.go"} {
-				if statuses[want] != "pending" {
-					t.Fatalf("scope not rebuilt for %s: %v", want, statuses)
+			for path, status := range statuses {
+				if status != "pending" {
+					t.Fatalf("scope status not rebuilt: %s=%s", path, status)
 				}
+				slices[path] = true
 			}
 			if len(w.agent.tools.Snapshot().Findings) != 0 {
 				t.Fatalf("fresh audit team must not inherit findings")
 			}
 		case phaseRecon:
 			reconWorkers++
+		}
+	}
+	for _, want := range []string{"entry1.go", "entry2.go", "entry3.go"} {
+		if !slices[want] {
+			t.Fatalf("map file %s not assigned to any audit worker: %v", want, slices)
 		}
 	}
 	if auditWorkers == 0 || reconWorkers == 0 {
