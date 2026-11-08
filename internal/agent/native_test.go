@@ -682,7 +682,9 @@ func TestAuditPlanTopsUpThinMap(t *testing.T) {
 	a := team.workers[0].agent
 
 	workspace := t.TempDir()
-	for _, name := range []string{"a.go", "b.go", "c.go", "d.go"} {
+	// Signal-bearing names: the shortlist only seeds files that look like a risk
+	// class, so a fixture of "a.go" would never be topped up.
+	for _, name := range []string{"UserController.java", "XssFilter.java", "UploadService.java", "UserDao.java"} {
 		if err := os.WriteFile(filepath.Join(workspace, name), []byte("package main\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -698,7 +700,7 @@ func TestAuditPlanTopsUpThinMap(t *testing.T) {
 
 	args, _ := json.Marshal(map[string]any{
 		"summary": "s", "audit_map": "m", "execute_instructions": "e",
-		"audit_files": []string{"a.go"},
+		"audit_files": []string{"UserController.java"},
 	})
 	out := a.auditPlanDone(args)
 	if !strings.Contains(out, `"ok": true`) {
@@ -707,13 +709,13 @@ func TestAuditPlanTopsUpThinMap(t *testing.T) {
 	if a.plan == nil || len(a.plan.AuditFiles) != 4 {
 		t.Fatalf("thin map must be topped up with every available file, got %+v", a.plan)
 	}
-	if a.plan.AuditFiles[0] != "a.go" {
+	if a.plan.AuditFiles[0] != "UserController.java" {
 		t.Fatalf("model pick must stay first, got %v", a.plan.AuditFiles)
 	}
 
 	// A map that already meets the target must not be padded further.
 	var full []string
-	for _, name := range []string{"a.go", "b.go", "c.go", "d.go"} {
+	for _, name := range []string{"UserController.java", "XssFilter.java", "UploadService.java", "UserDao.java"} {
 		full = append(full, name)
 	}
 	args, _ = json.Marshal(map[string]any{

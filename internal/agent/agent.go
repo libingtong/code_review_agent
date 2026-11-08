@@ -742,9 +742,9 @@ func (a *Agent) auditPlanDone(raw json.RawMessage) string {
 // the entry points, auth layer, DAO and upload paths; small enough that agents with
 // a 60-minute window can actually read them.
 func auditScopeTarget(minimum int) int {
-	target := minimum * 3
-	if target < 24 {
-		target = 24
+	target := minimum * 6
+	if target < 48 {
+		target = 48
 	}
 	if target > 32 {
 		target = 32

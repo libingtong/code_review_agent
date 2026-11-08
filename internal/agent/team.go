@@ -766,7 +766,31 @@ func (t *Team) ReuseRecon() error {
 	if plans == 0 {
 		return fmt.Errorf("这个会话没有可复用的侦察交接")
 	}
+	// Merge the saved map with the deterministic shortlist: old plans were built
+	// before the ranking fix and full of docs/.gitignore, and a re-scan must not
+	// inherit that.
 	scope := t.reconScopeLocked()
+	target := auditScopeTarget(t.cfg.Agent.MinAuditFiles)
+	merged := make([]string, 0, target)
+	seen := map[string]bool{}
+	for _, p := range t.registry.SuggestAuditFiles(target, 4) {
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		merged = append(merged, p)
+	}
+	for _, p := range scope {
+		if len(merged) >= target {
+			break
+		}
+		if seen[p] {
+			continue
+		}
+		seen[p] = true
+		merged = append(merged, p)
+	}
+	scope = merged
 	if len(scope) == 0 {
 		return fmt.Errorf("这个会话没有审计范围文件，无法只复用侦察")
 	}

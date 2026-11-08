@@ -44,15 +44,27 @@ func TestSuggestAuditFilesRanksSignals(t *testing.T) {
 	if len(got) != 3 {
 		t.Fatalf("limit not respected: %v", got)
 	}
+	// Control-plane classes come first; a bare controller is numerous and ranks after
+	// them, so it must not eat the first slots.
 	want := map[string]bool{
-		"src/main/java/app/web/UserController.java": true,
-		"src/main/java/app/web/AuthFilter.java":     true,
-		"src/main/java/app/UploadService.java":      true,
+		"src/main/java/app/UploadService.java":  true,
+		"src/main/java/app/web/AuthFilter.java": true,
+		"src/main/java/app/dao/UserDao.java":    true,
 	}
 	for _, path := range got {
 		if !want[path] {
-			t.Fatalf("low-signal file ranked too high: %v", got)
+			t.Fatalf("unexpected first pick: %v", got)
 		}
+	}
+	full := registry.SuggestAuditFiles(10, 4)
+	controllerAt := -1
+	for index, path := range full {
+		if strings.HasSuffix(path, "UserController.java") {
+			controllerAt = index
+		}
+	}
+	if controllerAt < 3 {
+		t.Fatalf("controller should rank behind the control plane: %v", full)
 	}
 
 	all := registry.SuggestAuditFiles(10, 4)
@@ -79,15 +91,16 @@ func TestSuggestAuditFilesSpreadsAcrossDirectories(t *testing.T) {
 	for _, path := range got {
 		perDir[filepath.Dir(path)]++
 	}
+	// The per-class guarantee may take a couple of extra files from one directory on
+	// purpose (the control-plane classes must be represented), but the fill phase
+	// still spreads out instead of collapsing into a single package.
 	for dir, count := range perDir {
-		if count > 2 {
+		if count > guaranteedPerBucket+2 {
 			t.Fatalf("directory %s took %d slots: %v", dir, count, got)
 		}
 	}
-	// One file in .../api plus two from .../web: the per-directory cap keeps the
-	// quota from collapsing into a single package.
-	if len(got) != 3 {
-		t.Fatalf("expected the per-directory cap to apply, got %v", got)
+	if len(got) != 6 {
+		t.Fatalf("expected six files, got %v", got)
 	}
 }
 

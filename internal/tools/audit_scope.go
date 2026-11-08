@@ -25,32 +25,44 @@ var auditWeakDirSegments = []string{
 	"/static/", "/assets/", "/dist/", "/build/",
 }
 
-type auditWeight struct {
-	score int
-	words []string
+// auditBucket is one class of high-risk code. Buckets are *interleaved* when the
+// scope is built: additive keyword scoring let "…SessionDao" files outrank the
+// filter and crypto classes, so the plan never reached XssFilter or HybridEncryption
+// even though those are exactly the control-plane files to read first.
+type auditBucket struct {
+	name    string
+	words   []string
+	primary []string
+	// nameOnly files must match in the file name, not just the package.
+	nameOnly bool
 }
 
-// auditWeights is ordered by signal strength. A controller or auth filter catches
-// both access-control and injection defects, so it outranks a helper class.
-var auditWeights = []auditWeight{
-	{100, []string{"controller", "handler", "/action/", "endpoint", "servlet", "/api/"}},
-	{96, []string{"filter", "/security", "shiro", "springsecurity", "permission", "authorize", "authorization", "principal"}},
-	{94, []string{"login", "logout", "session", "token", "jwt", "auth", "sso", "oauth"}},
-	{92, []string{"upload", "storage", "oss", "minio", "/s3", "download", "attachment"}},
-	{90, []string{"callback", "notify", "pay", "wechat", "weixin", "alipay", "sms", "thirdpart", "webhook"}},
-	{86, []string{"dao", "mapper", "repository", "jdbc", "hibernate", "mybatis", "sql"}},
-	{82, []string{"encrypt", "decrypt", "crypto", "cipher", "aes", "rsa", "secret", "keymanager", "password", "captcha", "kaptcha"}},
-	{74, []string{"service", "manager", "biz", "business", "facade", "provider"}},
-	{60, []string{"interceptor", "aspect", "aop", "middleware", "config", "properties", "settings", "application"}},
-	{50, []string{"template", "jsp", "ftl", "vm", "theme", "view", "front"}},
+// guaranteedPerBucket is how many files each risk class contributes before the
+// rotation fills the rest.
+const guaranteedPerBucket = 5
+
+var auditBuckets = []auditBucket{
+	// primary = the specific, high-risk variant of a class; generic = the class word.
+	// "OSSController" (primary oss) must outrank "UploadFileController" (generic ×2).
+	{name: "crypto", words: []string{"encrypt", "decrypt", "cipher", "aes", "rsa", "secret", "keymanager", "password", "captcha", "kaptcha"}, primary: []string{"encrypt", "decrypt", "cipher", "rsa", "secret", "keymanager", "password", "captcha"}},
+	{name: "upload", words: []string{"upload", "oss", "minio", "storage", "download", "attachment"}, primary: []string{"oss", "minio", "storage", "download", "attachment"}},
+	{name: "callback", words: []string{"callback", "notify", "pay", "wechat", "weixin", "alipay", "sms", "webhook", "thirdpart"}, primary: []string{"callback", "notify", "alipay", "webhook", "thirdpart"}},
+	{name: "filter", words: []string{"filter", "interceptor", "wrapper", "xss", "csrf", "aspect", "aop", "middleware"}, primary: []string{"xss", "csrf", "filter", "interceptor"}},
+	{name: "auth", words: []string{"auth", "login", "logout", "session", "token", "jwt", "sso", "oauth", "permission", "principal"}, primary: []string{"auth", "jwt", "oauth", "sso", "permission"}},
+	{name: "dao", words: []string{"dao", "mapper", "repository", "jdbc", "hibernate", "mybatis", "recommend", "query", "where"}, primary: []string{"mapper", "jdbc", "mybatis", "recommend", "query", "where"}},
+	{name: "service", words: []string{"service", "manager", "biz", "business", "facade", "provider"}, primary: []string{}},
+	{name: "endpoint", words: []string{"controller", "handler", "action", "endpoint", "servlet"}, primary: []string{}},
+	{name: "config", words: []string{"config", "properties", "settings"}, primary: []string{}},
 }
 
-// auditPriority scores one inventory path. 0 means "never seed this file".
-// The scoring is deterministic on purpose: a thin model map used to collapse the
-// whole audit to zero findings, so the scope needs a model-independent floor.
-func auditPriority(entry InventoryEntry) int {
+// auditDTOs are data carriers: they hold no logic and should not take a slot while
+// 1900 candidates compete for it.
+var auditDTOs = []string{"vo.java", "dto.java", "po.java", "entity.java", "bean.java", "request.java", "response.java", "model.java", "param.java"}
+
+// auditablePath reports whether a path is eligible for the deterministic shortlist.
+func auditablePath(entry InventoryEntry) bool {
 	if entry.LowValue {
-		return 0
+		return false
 	}
 	lower := strings.ToLower(entry.Path)
 	ext := entry.Ext
@@ -58,32 +70,124 @@ func auditPriority(entry InventoryEntry) int {
 		ext = strings.ToLower(path.Ext(lower))
 	}
 	if !auditSourceExts[ext] {
-		return 0
+		return false
 	}
 	padded := "/" + lower
 	for _, weak := range auditWeakDirSegments {
 		if strings.Contains(padded, weak) {
-			return 0
+			return false
 		}
 	}
-	score := 12
-	for _, weight := range auditWeights {
-		for _, word := range weight.words {
-			if strings.Contains(lower, word) && weight.score > score {
-				score = weight.score
-				break
-			}
+	name := strings.ToLower(path.Base(lower))
+	for _, suffix := range auditDTOs {
+		if strings.HasSuffix(name, suffix) {
+			return false
 		}
 	}
-	// Application code under src/main beats loose scripts at the repository root.
-	if strings.Contains(padded, "/src/main/") || strings.Contains(padded, "/src/") {
-		score += 3
-	}
-	return score
+	return true
 }
 
-// SuggestAuditFiles returns the highest-signal files the audit scope should hold,
-// at most perDir files from one directory so a single package cannot eat the quota.
+// auditBucketOf returns the first bucket a path belongs to (bucket order is the
+// priority order) and how many of its keywords appear in the file name.
+func auditBucketOf(entryPath string) (auditBucket, int, bool) {
+	rawBase := path.Base(entryPath)
+	lower := strings.ToLower(entryPath)
+	name := strings.ToLower(rawBase)
+	dir := strings.TrimSuffix(lower, name)
+	_ = dir
+	for _, bucket := range auditBuckets {
+		hits := 0
+		for _, word := range bucket.words {
+			if containsSignal(rawBase, name, word) {
+				if containsWord(bucket.primary, word) {
+					hits += 4
+				} else {
+					hits++
+				}
+				continue
+			}
+			_ = dir
+		}
+		if hits > 0 {
+			return bucket, hits, true
+		}
+	}
+	return auditBucket{}, 0, false
+}
+
+// auditPriority is kept for diagnostics: bucket rank dominates, keyword hits refine.
+func auditPriority(entry InventoryEntry) int {
+	if !auditablePath(entry) {
+		return 0
+	}
+	bucket, hits, ok := auditBucketOf(entry.Path)
+	if !ok {
+		return 0
+	}
+	rank := 0
+	for i, b := range auditBuckets {
+		if b.name == bucket.name {
+			rank = len(auditBuckets) - i
+			break
+		}
+	}
+	return rank*10 + hits
+}
+
+// containsSignal matches a keyword on a word boundary for short tokens: plain
+// substring matching turned "posSetting" into an "oss" hit and put unrelated DAOs in
+// the upload bucket.
+func containsSignal(rawBase, lowerBase, word string) bool {
+	if len(word) > 4 {
+		return strings.Contains(lowerBase, word)
+	}
+	for start := 0; ; {
+		index := strings.Index(lowerBase[start:], word)
+		if index < 0 {
+			return false
+		}
+		index += start
+		// A short token must start a word: at the beginning, after a non-letter, or
+		// at a CamelCase boundary (UserDao) so "posSetting" no longer matches "oss".
+		if index == 0 || !isLetter(lowerBase[index-1]) || isUpper(rawBase[index]) {
+			return true
+		}
+		start = index + 1
+		if start >= len(lowerBase) {
+			return false
+		}
+	}
+}
+
+func isUpper(b byte) bool { return b >= 'A' && b <= 'Z' }
+
+func isLetter(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z')
+}
+
+// containsWord reports whether the slice contains the word.
+func containsWord(words []string, word string) bool {
+	for _, candidate := range words {
+		if candidate == word {
+			return true
+		}
+	}
+	return false
+}
+
+// checkBucket keeps auditBuckets referenced for tests that inspect names.
+func checkBucket(name string) bool {
+	for _, bucket := range auditBuckets {
+		if bucket.name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// SuggestAuditFiles returns the highest-signal files the audit scope should hold.
+// Buckets are interleaved (one crypto, one upload, one filter, …) so the plan always
+// covers the control plane instead of filling up with one class of file.
 func (r *Registry) SuggestAuditFiles(limit int, perDir int) []string {
 	if limit <= 0 {
 		return nil
@@ -92,37 +196,89 @@ func (r *Registry) SuggestAuditFiles(limit int, perDir int) []string {
 		perDir = 4
 	}
 	type candidate struct {
-		path  string
-		score int
-		depth int
+		path     string
+		hits     int
+		depth    int
+		nameSize int
 	}
-	var candidates []candidate
+	grouped := make([][]candidate, len(auditBuckets))
 	for _, entry := range r.inventory {
-		score := auditPriority(entry)
-		if score == 0 {
+		if !auditablePath(entry) {
 			continue
 		}
-		candidates = append(candidates, candidate{path: entry.Path, score: score, depth: strings.Count(entry.Path, "/")})
+		bucket, hits, ok := auditBucketOf(entry.Path)
+		if !ok {
+			continue
+		}
+		index := 0
+		for i, b := range auditBuckets {
+			if b.name == bucket.name {
+				index = i
+				break
+			}
+		}
+		grouped[index] = append(grouped[index], candidate{path: entry.Path, hits: hits, depth: strings.Count(entry.Path, "/"), nameSize: len(path.Base(entry.Path))})
 	}
-	sort.SliceStable(candidates, func(i, j int) bool {
-		if candidates[i].score != candidates[j].score {
-			return candidates[i].score > candidates[j].score
-		}
-		if candidates[i].depth != candidates[j].depth {
-			return candidates[i].depth < candidates[j].depth
-		}
-		return candidates[i].path < candidates[j].path
-	})
+	for _, group := range grouped {
+		sort.SliceStable(group, func(i, j int) bool {
+			if group[i].hits != group[j].hits {
+				return group[i].hits > group[j].hits
+			}
+			// A short core class name (OSSController) usually holds the logic; a long
+			// one (ComCampusRecruitSignUpSessionDao) is often generated plumbing.
+			if group[i].nameSize != group[j].nameSize {
+				return group[i].nameSize < group[j].nameSize
+			}
+			if group[i].depth != group[j].depth {
+				return group[i].depth < group[j].depth
+			}
+			return group[i].path < group[j].path
+		})
+	}
 	used := map[string]int{}
 	out := make([]string, 0, limit)
-	for _, candidate := range candidates {
-		dir := path.Dir(candidate.path)
-		if used[dir] >= perDir {
-			continue
+	// Guarantee the best few files of every class before filling by rotation: with
+	// pure rotation the per-directory cap let "…SessionDao" files take every dao/act
+	// slot and pushed OSSController out of the plan entirely.
+	guarantee := guaranteedPerBucket
+	for _, group := range grouped {
+		taken := 0
+		for _, candidate := range group {
+			if taken >= guarantee || len(out) >= limit {
+				break
+			}
+			out = append(out, candidate.path)
+			used[path.Dir(candidate.path)]++
+			taken++
 		}
-		used[dir]++
-		out = append(out, candidate.path)
-		if len(out) >= limit {
+	}
+	seen := map[string]bool{}
+	for _, p := range out {
+		seen[p] = true
+	}
+	for round := 0; len(out) < limit; round++ {
+		progressed := false
+		for _, group := range grouped {
+			if round >= len(group) {
+				continue
+			}
+			progressed = true
+			candidate := group[round]
+			if seen[candidate.path] {
+				continue
+			}
+			dir := path.Dir(candidate.path)
+			if used[dir] >= perDir+guarantee {
+				continue
+			}
+			used[dir]++
+			seen[candidate.path] = true
+			out = append(out, candidate.path)
+			if len(out) >= limit {
+				break
+			}
+		}
+		if !progressed {
 			break
 		}
 	}
