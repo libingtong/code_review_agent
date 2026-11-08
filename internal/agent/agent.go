@@ -595,7 +595,13 @@ func (a *Agent) auditPlanDone(raw json.RawMessage) string {
 	}
 	applied := a.tools.ApplyAuditScope(args.AuditFiles)
 	if len(applied) == 0 {
-		data, _ := json.MarshalIndent(tools.Result{OK: false, Error: "audit_files did not match any files in the current workspace; use exact relative paths from review_state/list_files/search_content"}, "", "  ")
+		// Spell out valid paths: without examples the model retries the same wrong
+		// names until the recon budget runs out.
+		message := "audit_files did not match any files in the current workspace; use exact relative paths from review_state/list_files/search_content."
+		if samples := a.tools.SampleInventoryPaths(3); len(samples) > 0 {
+			message += " 可直接使用的示例：" + strings.Join(samples, "、")
+		}
+		data, _ := json.MarshalIndent(tools.Result{OK: false, Error: message}, "", "  ")
 		return string(data)
 	}
 	args.AuditFiles = applied

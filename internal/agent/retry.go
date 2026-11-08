@@ -38,8 +38,15 @@ func isModelDisconnect(err error) bool {
 	if errors.As(err, &network) {
 		return true
 	}
+	// Reuse the provider classifier so vendor spellings (server_error, 网络错误,
+	// rate_limit_exceeded) are retried instead of killing the member.
+	switch provider.Classify(err) {
+	case provider.FailureNetwork, provider.FailureRateLimited:
+		return true
+	}
 	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "openai status 5") || strings.Contains(text, "openai status 408:") || strings.Contains(text, "openai status 429:") || strings.Contains(text, "stream ended without response.completed") || strings.Contains(text, "connection reset") || strings.Contains(text, "connection refused") || strings.Contains(text, "broken pipe")
+	return strings.Contains(text, "openai status 5") || strings.Contains(text, "openai status 408:") ||
+		strings.Contains(text, "stream ended without response.completed")
 }
 
 // Inspect API errors only, never generated text or ordinary tool output.

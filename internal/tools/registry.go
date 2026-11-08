@@ -243,6 +243,24 @@ func IsKnownTool(name string) bool {
 	}
 }
 
+// SampleInventoryPaths returns up to n real workspace paths, so a rejected audit
+// plan can tell the model what to write instead of letting it guess again.
+func (r *Registry) SampleInventoryPaths(n int) []string {
+	// Per-agent registries are forked, so no lock is needed here (same assumption
+	// as ApplyAuditScope).
+	out := make([]string, 0, n)
+	for _, entry := range r.inventory {
+		if strings.HasSuffix(entry.Path, "/") || entry.Ext == "" {
+			continue // directories and extension-less entries are rarely valid audit targets
+		}
+		out = append(out, entry.Path)
+		if len(out) >= n {
+			break
+		}
+	}
+	return out
+}
+
 func (r *Registry) ApplyAuditScope(paths []string) []string {
 	var applied []string
 	for _, p := range paths {
