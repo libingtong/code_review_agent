@@ -161,6 +161,12 @@ func (r *Registry) normalizeFileReviewItems(args fileReviewUpdateArgs) []fileRev
 }
 
 func (r *Registry) selectInventoryPathsByFileReviewArgs(args fileReviewUpdateArgs) []string {
+	// A broad selector such as dir:"." is useful for browsing, but during audit it
+	// must not turn the entire inventory into the review denominator. The planned
+	// files already live in r.files; resolve broad selectors against that set.
+	if len(r.files) > 0 && (args.Dir == "." || args.Dir == "./" || containsCurrentDir(args.Dirs)) {
+		return selectPathsByFileReviewArgs(args, r.files)
+	}
 	dirs := append([]string(nil), args.Dirs...)
 	if args.Dir != "" {
 		dirs = append(dirs, args.Dir)
@@ -192,6 +198,16 @@ func (r *Registry) selectInventoryPathsByFileReviewArgs(args fileReviewUpdateArg
 		paths = append(paths, file.Path)
 	}
 	return paths
+}
+
+func containsCurrentDir(dirs []string) bool {
+	for _, dir := range dirs {
+		value := normalizeSelectorDir(dir)
+		if value == "" || value == "." || value == "./" {
+			return true
+		}
+	}
+	return false
 }
 
 func hasFileReviewSelectors(args fileReviewUpdateArgs) bool {
