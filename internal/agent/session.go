@@ -39,6 +39,7 @@ type teamSession struct {
 	Input              string                     `json:"input"`
 	ReconAgents        int                        `json:"recon_agents"`
 	AuditAgents        int                        `json:"audit_agents"`
+	Project            tools.ProjectNote          `json:"project_note,omitempty"`
 	Workers            []workerSession            `json:"workers"`
 	Forum              []forum.Message            `json:"forum"`
 	ForumNames         map[string]string          `json:"forum_names,omitempty"`
@@ -62,16 +63,19 @@ func (t *Team) SaveSession(path string) error {
 	budget := t.budgetStatusLocked()
 	budget.Running = false
 	s.Budget = &budget
+	s.Project = t.aggregateLocked().Project
 	for _, w := range t.workers {
 		saved := w.saved
 		// A session saved mid-turn (cancel, interrupt, crash) can hold an unpaired
 		// call; normalizing here is what makes the file loadable on resume.
 		saved.Messages = normalizeToolHistoryMessages(saved.Messages)
+		saved.Snapshot.Project = tools.ProjectNote{}
 		s.Workers = append(s.Workers, saved)
 	}
 	if t.moderator != nil {
 		saved := t.moderator.saved
 		saved.Messages = normalizeToolHistoryMessages(saved.Messages)
+		saved.Snapshot.Project = tools.ProjectNote{}
 		s.Moderator = &saved
 	}
 	s.Revocations = append([]FindingRevocation(nil), t.revocations...)
@@ -247,6 +251,15 @@ func (t *Team) LoadSession(path string) error {
 	if s.Moderator != nil {
 		allSaved = append(allSaved, *s.Moderator)
 	}
+	if s.Project.Note == "" {
+		for _, saved := range allSaved {
+			if saved.Snapshot.Project.Note != "" {
+				s.Project = saved.Snapshot.Project
+				break
+			}
+		}
+	}
+	sharedProject := s.Project
 	for _, saved := range allSaved {
 		if saved.UserBroadcastCursor < 0 || saved.UserBroadcastCursor > int64(len(s.UserBroadcasts)) || saved.UserBroadcastDelivered < 0 || saved.UserBroadcastDelivered > saved.UserBroadcastCursor {
 			newRegistry.Close()
@@ -377,6 +390,7 @@ func (t *Team) LoadSession(path string) error {
 		saved.Status.Name = t.board.Name(saved.Status.ID)
 		a.tracePath = saved.TracePath
 		a.prompts.SetLoadedSkills(saved.Skills)
+		saved.Snapshot.Project = sharedProject
 		a.tools.RestoreSnapshot(saved.Snapshot)
 		a.messages = append([]llm.Message(nil), saved.Messages...)
 		a.sanitizeMessages()

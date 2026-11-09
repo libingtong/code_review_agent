@@ -188,6 +188,8 @@ type headlessOptions struct {
 	keepBudget bool
 }
 
+const maxAutomaticResumeSessionBytes = 128 << 20
+
 // resolveSession turns "latest" (or an empty latest-ish selector) into the newest
 // session file, so resuming does not require typing a timestamp.
 func resolveSession(selector string) (string, error) {
@@ -201,19 +203,19 @@ func resolveSession(selector string) (string, error) {
 	if len(entries) == 0 {
 		return "", fmt.Errorf("sessions/ 下没有可恢复的会话")
 	}
-	newest := entries[0]
-	newestInfo, err := os.Stat(newest)
-	if err != nil {
-		return "", err
-	}
-	for _, entry := range entries[1:] {
+	var newest string
+	var newestInfo os.FileInfo
+	for _, entry := range entries {
 		info, err := os.Stat(entry)
-		if err != nil {
+		if err != nil || info.Size() > maxAutomaticResumeSessionBytes {
 			continue
 		}
-		if info.ModTime().After(newestInfo.ModTime()) {
+		if newest == "" || info.ModTime().After(newestInfo.ModTime()) {
 			newest, newestInfo = entry, info
 		}
+	}
+	if newest == "" {
+		return "", fmt.Errorf("sessions/ 下没有可自动恢复的会话（已跳过超过 %d MB 的异常大文件）", maxAutomaticResumeSessionBytes>>20)
 	}
 	return newest, nil
 }

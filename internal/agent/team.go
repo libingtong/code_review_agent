@@ -929,7 +929,9 @@ func (t *Team) aggregateLocked() tools.Snapshot {
 	}
 	files := map[string]int{}
 	findings := map[string]int{}
-	var notes, summaries, next []string
+	var notes []string
+	noteSeen := map[string]bool{}
+	var summaries, next []string
 	allDone := true
 	count := 0
 	for _, w := range t.workers {
@@ -984,8 +986,9 @@ func (t *Team) aggregateLocked() tools.Snapshot {
 			f.Name = "[" + id + "] " + f.Name
 			out.Flows = append(out.Flows, f)
 		}
-		if s.Snapshot.Project.Note != "" {
-			notes = append(notes, "["+id+"]\n"+s.Snapshot.Project.Note)
+		if note := strings.TrimSpace(s.Snapshot.Project.Note); note != "" && !noteSeen[note] {
+			noteSeen[note] = true
+			notes = append(notes, "["+id+"]\n"+note)
 		}
 		if s.Snapshot.Audit.Summary != "" {
 			summaries = append(summaries, "["+id+"] "+s.Snapshot.Audit.Summary)
@@ -995,7 +998,7 @@ func (t *Team) aggregateLocked() tools.Snapshot {
 		}
 	}
 	sort.Slice(out.Files, func(i, j int) bool { return out.Files[i].Path < out.Files[j].Path })
-	out.Project.Note = strings.Join(notes, "\n\n")
+	out.Project.Note = tools.BoundProjectNote(strings.Join(notes, "\n\n"))
 	out.Audit = tools.AuditState{Ended: t.phase == "completed" && stage == phaseAudit && count > 0 && allDone, Summary: strings.Join(summaries, "\n\n"), NextSteps: strings.Join(next, "\n\n")}
 	t.applyRevocationsLocked(&out)
 	return out
