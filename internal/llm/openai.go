@@ -667,10 +667,10 @@ func (c *OpenAIClient) endpoint(path string) string {
 }
 
 func (c *OpenAIClient) responsesStream(ctx context.Context, messages []Message, emit func(Delta) error) error {
-	previousResponseID, requestMessages := responsesContinuationInput(ctx, messages)
-	if !c.continuationEnabled() {
-		previousResponseID = ""
-	}
+	previousResponseID, requestMessages := c.responsesContinuationInput(ctx, messages)
+	// A rejected stream closes and cancels its watchdog context. Recovery must
+	// inherit the caller context instead, retaining caller cancellation.
+	requestCtx := ctx
 	build := func(previous string) (*http.Response, context.Context, error) {
 		reqBody := responsesRequest{Model: c.cfg.Model, Input: c.responsesHistoryInput(requestMessages), PreviousResponseID: previous, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP, MaxOutputTokens: c.cfg.MaxOutputTokens, Stream: true}
 		reqBody.Thinking, reqBody.Reasoning = c.cfg.Thinking, c.responseReasoning()
@@ -678,14 +678,18 @@ func (c *OpenAIClient) responsesStream(ctx context.Context, messages []Message, 
 		if err != nil {
 			return nil, ctx, err
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint("/responses"), bytes.NewReader(data))
+		req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, c.endpoint("/responses"), bytes.NewReader(data))
 		if err != nil {
 			return nil, ctx, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "text/event-stream")
 		req.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
-		return c.doStream(req)
+		resp, responseCtx, err := c.doStream(req)
+		if err == nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+			err = readErrorBody(resp)
+		}
+		return resp, responseCtx, err
 	}
 	resp, ctx, err := build(previousResponseID)
 	if err != nil && badHistoryError(err) && c.textHistoryEnabled() && hasNativeToolItems(requestMessages) {
@@ -693,6 +697,7 @@ func (c *OpenAIClient) responsesStream(ctx context.Context, messages []Message, 
 		resp, ctx, err = build(previousResponseID)
 	}
 	if err != nil && retryWithoutContinuation(c, err) {
+		requestMessages = messages
 		resp, ctx, err = build("")
 	}
 	if err != nil {
@@ -800,10 +805,7 @@ func (c *OpenAIClient) responsesStream(ctx context.Context, messages []Message, 
 }
 
 func (c *OpenAIClient) responsesChat(ctx context.Context, messages []Message) (string, error) {
-	previousResponseID, requestMessages := responsesContinuationInput(ctx, messages)
-	if !c.continuationEnabled() {
-		previousResponseID = ""
-	}
+	previousResponseID, requestMessages := c.responsesContinuationInput(ctx, messages)
 	build := func(previous string) (*http.Response, error) {
 		reqBody := responsesRequest{Model: c.cfg.Model, Input: c.responsesHistoryInput(requestMessages), PreviousResponseID: previous, Temperature: c.cfg.Temperature, TopP: c.cfg.TopP, MaxOutputTokens: c.cfg.MaxOutputTokens}
 		reqBody.Thinking, reqBody.Reasoning = c.cfg.Thinking, c.responseReasoning()
@@ -827,6 +829,7 @@ func (c *OpenAIClient) responsesChat(ctx context.Context, messages []Message) (s
 		bodyErr := readErrorBody(resp)
 		if badHistoryError(bodyErr) {
 			c.useTextHistory()
+			requestMessages = messages
 			resp, err = build("")
 			if err != nil {
 				return "", err
@@ -839,6 +842,7 @@ func (c *OpenAIClient) responsesChat(ctx context.Context, messages []Message) (s
 		// Read the body to decide whether this is a continuation complaint.
 		bodyErr := readErrorBody(resp)
 		if retryWithoutContinuation(c, bodyErr) {
+			requestMessages = messages
 			resp, err = build("")
 			if err != nil {
 				return "", err
@@ -890,7 +894,12 @@ func responsesInput(messages []Message) []responsesInputItem {
 	return items
 }
 
-func responsesContinuationInput(ctx context.Context, messages []Message) (string, []Message) {
+func (c *OpenAIClient) responsesContinuationInput(ctx context.Context, messages []Message) (string, []Message) {
+	// An incremental suffix is meaningful only with its parent response ID.
+	// Keep the system/task history when a channel has rejected continuation.
+	if !c.continuationEnabled() {
+		return "", messages
+	}
 	continuation, ok := responsesContinuationFromContext(ctx)
 	if !ok {
 		return "", messages

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"code-review-agent/internal/llm"
+	"code-review-agent/internal/tools"
 )
 
 func TestAuditStagePreAssignsScopeSlices(t *testing.T) {
@@ -28,6 +29,10 @@ func TestAuditStagePreAssignsScopeSlices(t *testing.T) {
 		}
 		if len(files) > 0 && !strings.Contains(w.agent.assignment, "已经定") && !strings.Contains(w.agent.assignment, "切好分给你") {
 			t.Fatalf("worker %s assignment lacks the slice: %q", w.agent.id, w.agent.assignment)
+		}
+		w.agent.tools.Call("file_review_update", json.RawMessage(`{"pattern":"*","status":"reviewing"}`))
+		if after := w.agent.tools.Snapshot().Files; len(after) != len(files) {
+			t.Fatalf("audit worker %s selector escaped its slice: before=%d after=%d", w.agent.id, len(files), len(after))
 		}
 	}
 	if len(seen) != 4 {
@@ -129,14 +134,81 @@ func TestReinforceAssignmentKeepsChecklistInFront(t *testing.T) {
 		t.Fatalf("directive stacked instead of replaced: %d", got)
 	}
 
-	// Once both files are read, the checklist disappears.
+	// Reading leaves an audit in progress; only a conclusion clears the queue.
 	a.tools.PlanAuditScope(a.assigned)
 	for _, path := range a.assigned {
 		a.tools.Call("read_file", json.RawMessage(`{"path":"`+path+`","limit":5}`))
 	}
 	a.reinforceAssignment()
+	if got := countAssignmentDirectives(a.messages); got != 1 {
+		t.Fatalf("read files still need conclusions: directive count = %d", got)
+	}
+	snapshot := a.tools.Snapshot()
+	for i := range snapshot.Files {
+		snapshot.Files[i].Status = "reviewed"
+	}
+	a.tools.RestoreSnapshot(snapshot)
+	a.reinforceAssignment()
 	if got := countAssignmentDirectives(a.messages); got != 0 {
-		t.Fatalf("checklist must clear when everything is read: %d", got)
+		t.Fatalf("checklist must clear when everything is completed: %d", got)
+	}
+}
+
+func TestReinforceAssignmentAdvancesOnlyAfterConclusion(t *testing.T) {
+	team := newTestTeam(t, &noticeClient{})
+	team.mu.Lock()
+	team.createStageLocked(phaseRecon)
+	team.mu.Unlock()
+	a := team.workers[0].agent
+	a.phase = phaseAudit
+	a.assigned = []string{"first.go", "second.go", "third.go"}
+	a.tools.RestoreSnapshot(tools.Snapshot{Files: []tools.FileReview{
+		{Path: "first.go", Status: "unseen"},
+		{Path: "second.go", Status: "reviewing"},
+		{Path: "third.go", Status: "skipped"},
+	}})
+	a.reinforceAssignment()
+	text := lastAssignmentDirective(a.messages)
+	if !strings.Contains(text, "2 个未完成") || !strings.Contains(text, "first.go、second.go") || strings.Contains(text, "third.go") {
+		t.Fatalf("unseen/reviewing must stay queued, skipped must leave: %q", text)
+	}
+	if !strings.Contains(text, "已读则") || !strings.Contains(text, "file_review_update") || strings.Contains(text, "个没读") {
+		t.Fatalf("instruction must distinguish reading from an audit conclusion: %q", text)
+	}
+	snapshot := a.tools.Snapshot()
+	snapshot.Files[0].Status = "reviewed"
+	a.tools.RestoreSnapshot(snapshot)
+	for i := 0; i < 5; i++ {
+		a.reinforceAssignment()
+	}
+	text = lastAssignmentDirective(a.messages)
+	if strings.Contains(text, "first.go") || !strings.Contains(text, "1 个未完成") || !strings.Contains(text, "second.go") {
+		t.Fatalf("queue did not advance after conclusion: %q", text)
+	}
+	if countAssignmentDirectives(a.messages) != 1 {
+		t.Fatalf("checklist accumulated across repeated requests: %v", a.messages)
+	}
+	// Reminders must never manufacture review completion or alter coverage.
+	after := a.tools.Snapshot()
+	if after.Files[1].Status != "reviewing" {
+		t.Fatalf("reminder changed unfinished file status: %+v", after.Files[1])
+	}
+}
+
+func TestReinforceAssignmentBoundsPreview(t *testing.T) {
+	team := newTestTeam(t, &noticeClient{})
+	team.mu.Lock()
+	team.createStageLocked(phaseRecon)
+	team.mu.Unlock()
+	a := team.workers[0].agent
+	a.phase = phaseAudit
+	for i := 0; i < 100; i++ {
+		a.assigned = append(a.assigned, strings.Repeat("长路径", 200)+".go")
+	}
+	a.reinforceAssignment()
+	text := lastAssignmentDirective(a.messages)
+	if !strings.Contains(text, "100 个未完成") || len(text) > 1600 {
+		t.Fatalf("preview must be bounded independently of queue/path lengths: %d bytes", len(text))
 	}
 }
 

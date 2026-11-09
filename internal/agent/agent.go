@@ -136,6 +136,7 @@ func newWorker(cfg config.Config, prompts prompt.Prompts, client, compressClient
 	if compressClient == nil {
 		compressClient = client
 	}
+	registry.SetAuditSelectorScope(phase == phaseAudit)
 	prompts.SetLoadedSkills(prompts.LoadedSkillNames())
 	if board != nil {
 		board.Register(id, phase)
@@ -1282,7 +1283,9 @@ func (a *Agent) reinforceAssignment() {
 	}
 	var pending []string
 	for _, path := range a.assigned {
-		if state, ok := status[path]; !ok || state == "pending" {
+		// Planning and reading both use "reviewing", so that status does not
+		// establish that the file has been read or that its audit is finished.
+		if state := status[path]; state != "reviewed" && state != "skipped" {
 			pending = append(pending, path)
 		}
 	}
@@ -1297,11 +1300,14 @@ func (a *Agent) reinforceAssignment() {
 	if len(pending) == 0 {
 		return
 	}
-	preview := pending
-	if len(preview) > 3 {
-		preview = preview[:3]
+	preview := make([]string, 0, 3)
+	for _, path := range pending {
+		preview = append(preview, shortText(path, 180))
+		if len(preview) == 3 {
+			break
+		}
 	}
-	text := fmt.Sprintf("%s你分配到的文件里还有 %d 个没读：%s。请先 read_file 这些文件（读完再考虑其它路径），发现证据立刻 report_finding。", assignmentDirective, len(pending), strings.Join(preview, "、"))
+	text := fmt.Sprintf("%s你分配到的文件还有 %d 个未完成，按分配顺序推进：%s。优先完成第一个文件：尚未读取则 read_file；已读则补齐必要证据并给出审阅结论，通过 file_review_update 更新状态和说明，再推进下一个文件。只有有审阅结论才标记 reviewed，有明确排除理由才标记 skipped；发现漏洞证据立即 report_finding。reviewing 不代表已经读过，也不代表完成，不要重复从项目说明或技能目录开始。", assignmentDirective, len(pending), strings.Join(preview, "、"))
 	a.addMessage(llm.Message{Role: llm.RoleUser, Content: text})
 }
 

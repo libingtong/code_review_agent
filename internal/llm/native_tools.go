@@ -259,10 +259,7 @@ const toolDirective = "本回合必须通过原生 function call 调用工具来
 	"每次调用必须提供完整 JSON 对象参数，不要输出 XML/DSML，也不要把工具调用写成文字或代码块。"
 
 func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, tools []ToolDefinition, emit func(Delta) error) (ToolResponse, error) {
-	previousResponseID, requestMessages := responsesContinuationInput(ctx, messages)
-	if !c.continuationEnabled() {
-		previousResponseID = ""
-	}
+	previousResponseID, requestMessages := c.responsesContinuationInput(ctx, messages)
 	payload := struct {
 		Model              string                 `json:"model"`
 		Input              []any                  `json:"input"`
@@ -294,19 +291,24 @@ func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, t
 	defer progress.flushPending()
 	progress.textLimit = nativeTextLimit(c.cfg.MaxOutputTokens)
 	ctx = withPayload(ctx, payload)
-	resp, ctx, err := c.nativeRequest(ctx, "/responses", payload)
+	// Closing a rejected stream cancels its watchdog context. Start retries
+	// from the original request context, which still carries caller cancellation.
+	requestCtx := ctx
+	resp, ctx, err := c.nativeRequest(requestCtx, "/responses", payload)
 	if err != nil && badHistoryError(err) && c.textHistoryEnabled() && hasNativeToolItems(requestMessages) {
 		// One failed turn, then the channel switches to text history for good.
 		c.useTextHistory()
 		payload.Input = degradedResponsesInput(requestMessages)
-		resp, ctx, err = c.nativeRequest(ctx, "/responses", payload)
+		resp, ctx, err = c.nativeRequest(requestCtx, "/responses", payload)
 	}
 	if err != nil && retryWithoutContinuation(c, err) {
 		// The endpoint hands out response ids but refuses previous_response_id
 		// (GLM's Responses API does this). Resend the full history once and stop
 		// asking for continuation from now on.
 		payload.PreviousResponseID = ""
-		resp, ctx, err = c.nativeRequest(ctx, "/responses", payload)
+		requestMessages = messages
+		payload.Input = c.responsesHistoryInput(requestMessages)
+		resp, ctx, err = c.nativeRequest(requestCtx, "/responses", payload)
 	}
 	if err != nil {
 		logModelFailure(ctx, "responses-tools", c.cfg.Model, err)
@@ -330,7 +332,7 @@ func (c *OpenAIClient) responsesTools(ctx context.Context, messages []Message, t
 					return ToolResponse{}, streamErr
 				}
 				retryTracker.textLimit = nativeTextLimit(c.cfg.MaxOutputTokens)
-				retryResp, retryCtx, retryErr := c.nativeRequest(ctx, "/responses", payload)
+				retryResp, retryCtx, retryErr := c.nativeRequest(requestCtx, "/responses", payload)
 				if retryErr == nil {
 					defer retryResp.Body.Close()
 					response, streamErr = consumeNativeResponses(retryCtx, retryResp.Body, retryTracker)

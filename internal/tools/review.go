@@ -161,10 +161,9 @@ func (r *Registry) normalizeFileReviewItems(args fileReviewUpdateArgs) []fileRev
 }
 
 func (r *Registry) selectInventoryPathsByFileReviewArgs(args fileReviewUpdateArgs) []string {
-	// A broad selector such as dir:"." is useful for browsing, but during audit it
-	// must not turn the entire inventory into the review denominator. The planned
-	// files already live in r.files; resolve broad selectors against that set.
-	if len(r.files) > 0 && (args.Dir == "." || args.Dir == "./" || containsCurrentDir(args.Dirs)) {
+	// Audit selectors only update files already in this worker's scope, even
+	// when the scope is empty. Recon keeps selecting from the full inventory.
+	if r.auditSelectorScope {
 		return selectPathsByFileReviewArgs(args, r.files)
 	}
 	dirs := append([]string(nil), args.Dirs...)

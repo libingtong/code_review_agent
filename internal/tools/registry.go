@@ -20,6 +20,7 @@ type Registry struct {
 	findings           []Finding
 	projectNote        ProjectNote
 	files              []FileReview
+	auditSelectorScope bool
 	variables          []VariableReview
 	flows              []FlowReview
 	audit              AuditState
@@ -77,6 +78,13 @@ type Snapshot struct {
 
 type ProjectNote struct {
 	Note string `json:"note,omitempty"`
+}
+
+// SetAuditSelectorScope restricts batch review selectors to the worker's current
+// scope during audit. Explicit paths can still add dependencies. This is runtime
+// stage configuration, so restoring a snapshot must not override it.
+func (r *Registry) SetAuditSelectorScope(enabled bool) {
+	r.auditSelectorScope = enabled
 }
 
 func (r *Registry) RestoreSnapshot(snapshot Snapshot) {

@@ -141,7 +141,7 @@ func (r *Registry) readToolBuffer(raw json.RawMessage) string {
 }
 
 func (r *Registry) Fork() *Registry {
-	return &Registry{workspace: r.workspace, maxToolResultChars: r.maxToolResultChars, inventory: r.inventory, interesting: r.interesting, nextTodoID: 1}
+	return &Registry{workspace: r.workspace, maxToolResultChars: r.maxToolResultChars, inventory: r.inventory, interesting: r.interesting, auditSelectorScope: r.auditSelectorScope, nextTodoID: 1}
 }
 
 func (r *Registry) Close() error { r.ClearBuffer(); return nil }
