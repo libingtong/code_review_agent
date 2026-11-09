@@ -26,6 +26,8 @@ providers:
       max_output_tokens: 65536
       timeout_seconds: 120
       stream: true
+    schedule:
+      enabled: false          # MiniMax 主导复测期间全天可用
 
   - id: glm
     label: GLM Coding Plan
@@ -89,7 +91,7 @@ routing:
 
 # 频繁 429 说明并发超过套餐允许：每次 429 把该源并发减半，连续成功再慢慢加回。
 concurrency:
-  max_in_flight: 5          # GLM 当前稳定上限；避免自适应反复升到 10 后触发 429
+  max_in_flight: 5          # 当前主渠道稳定上限，避免自适应反复升档后触发 429
   initial_in_flight: 4
   min_in_flight: 1
   increase_after_successes: 20

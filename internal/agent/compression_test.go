@@ -47,7 +47,7 @@ func TestManySmallTurnsKeepHistoryPrefixWithoutPeriodicCompaction(t *testing.T) 
 		prior = append([]llm.Message(nil), messages...)
 		// Changed metadata must not rewrite an existing request prefix.
 		a.prompts.System = "new metadata for the next compressed prefix"
-		return toolReply("review_state", map[string]any{"limit": 1}), nil
+		return toolReply("list_files", map[string]any{"root": "."}), nil
 	}}
 	compressor := &noticeClient{call: func(context.Context, []llm.Message) (string, error) {
 		t.Fatal("small turns triggered periodic compression")

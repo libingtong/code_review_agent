@@ -43,14 +43,13 @@ func TestAuditStagePreAssignsScopeSlices(t *testing.T) {
 func TestAuditClaimGateBlocksForumUntilFirstClaim(t *testing.T) {
 	team := newTestTeam(t, &noticeClient{})
 	worker := &Agent{cfg: team.cfg, phase: phaseAudit, turn: 5}
-	if msg := worker.phaseToolCorrection("forum_roster"); !strings.Contains(msg, "认领") {
-		t.Fatalf("forum browsing must be gated before the first claim: %q", msg)
+	for _, name := range []string{"forum_roster", "read_handoff", "review_state"} {
+		if msg := worker.phaseToolCorrection(name); !strings.Contains(msg, "认领") {
+			t.Fatalf("%s must be gated before the first claim: %q", name, msg)
+		}
 	}
 	if msg := worker.phaseToolCorrection("file_review_update"); msg != "" {
 		t.Fatalf("claiming must stay allowed: %q", msg)
-	}
-	if msg := worker.phaseToolCorrection("review_state"); msg != "" {
-		t.Fatalf("status read must stay allowed: %q", msg)
 	}
 	worker.fileReviewCalls = 1
 	if msg := worker.phaseToolCorrection("forum_roster"); msg != "" {
@@ -87,6 +86,7 @@ func TestMetaToolsAreBounded(t *testing.T) {
 	a := team.workers[0].agent
 	a.phase = phaseAudit
 	a.turn = 10
+	a.fileReviewCalls = 1
 	a.skillLoads = maxSkillLoads
 	if msg := a.phaseToolCorrection("load_skill"); !strings.Contains(msg, "浪费回合") {
 		t.Fatalf("skill loading must be capped: %q", msg)
