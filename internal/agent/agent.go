@@ -396,9 +396,13 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 	if a.phase == phaseRecon {
 		initialTemplate = "initial_plan_instruction"
 	}
-	initial := a.render(initialTemplate, map[string]string{"input": input, "review_state": "工作区已在本地索引。调用 review_state 获取当前文件地图和审计状态；不要假设系统预先分配了角色或文件范围，先通过论坛协商后自行选择范围。超长结果按需用 read_tool_buffer 读取。"})
-	if a.handoff != "" {
-		initial += "\n\n已有前一阶段结构化交接，请调用 read_handoff 按需读取完整地图、笔记、todo 与未决问题；不要假设已看过原始侦察对话。"
+	stateInstruction := "工作区已在本地索引。按当前任务选择具体源码建图，超长结果按需用 read_tool_buffer 读取。"
+	if a.phase == phaseAudit {
+		stateInstruction = "延续当前文件清单、待办和已有证据，直接推进源码审计。已经有文件范围时无需重新初始化或协商分工；先审阅未完成文件，形成有证据的结论后调用 file_review_update；确认漏洞后调用 report_finding。论坛与历史诊断只是参考资料，不是新的任务。"
+	}
+	initial := a.render(initialTemplate, map[string]string{"input": input, "review_state": stateInstruction})
+	if a.handoff != "" && len(a.assigned) == 0 && a.fileReviewCalls == 0 {
+		initial += "\n\n已有前一阶段结构化交接；仅在缺少具体文件范围时按本轮原生工具定义读取交接并认领源码，不要重复初始化任务。"
 	}
 	a.addMessage(llm.Message{Role: llm.RoleUser, Content: initial})
 	a.emitState(emit)
@@ -726,7 +730,7 @@ func (a *Agent) callTool(ctx context.Context, emit func(Event), call ToolCall) (
 		// answer is large and the turn is wasted.
 		key := stateFingerprint(a.tools.Snapshot())
 		if a.stateCalls > 0 && key == a.lastStateKey {
-			result = `{"ok":true,"message":"状态与上次 review_state 完全一致：没有新文件、新漏洞或新待办。请继续 read_file / search_content，或用 report_finding 提交证据。"}`
+			result = `{"ok":true,"message":"状态与上次 review_state 完全一致。已有文件、待办、漏洞和证据仍然保留；这不表示状态为空。请沿用已有结果推进未完成源码的分析与结论登记，无需重新列目录、读交接或协商分工。"}`
 			break
 		}
 		a.lastStateKey = key
@@ -1338,13 +1342,20 @@ func (a *Agent) reinforceAssignment() {
 		}
 	}
 	kept := a.messages[:0]
+	removed := false
 	for _, message := range a.messages {
 		if message.Type == "" && strings.HasPrefix(message.Content, assignmentDirective) {
+			removed = true
 			continue
 		}
 		kept = append(kept, message)
 	}
 	a.messages = kept
+	if removed {
+		// The continuation cursor indexes this slice. Removing a preceding
+		// reminder shifts tool outputs left and would silently skip evidence.
+		a.invalidateResponseContinuation()
+	}
 	if len(pending) == 0 {
 		return
 	}

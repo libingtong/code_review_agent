@@ -439,12 +439,11 @@ func (t *Team) receive(w *teamWorker, e Event) {
 }
 
 func stageAssignment(stage string, count int) string {
-	assignment := fmt.Sprintf("本阶段有 %d 个独立 Agent。系统不预设角色、主题或文件范围。先调用 forum_roster 和 forum_threads 查看同伴，再通过 forum_post 提出候选分工；需要强提醒所有 Agent 时在正文加入 @全体成员（也支持 @all），收到提醒的 Agent 自主决定是否回应；随后用 forum_wait 等待同伴回复（等待有界，超时后继续），根据实际回复自行协商认领范围，避免重复并主动覆盖空白。不要把内部路由 ID 或启动顺序当作分工。名字从预制昵称表中即时分配，重复加001等后缀，不调用模型命名。", count)
 	if stage == phaseAudit {
-		assignment += "这是全新的审计团队：先调用 read_handoff 按需读取结构化侦察资料，再根据论坛协商结果用 file_review_update 自行选择需要审计的文件；不要假设系统预先分配了任何文件。"
-	} else {
-		assignment += "当前是侦察阶段：自行选择建图重点，并把跨范围问题发到论坛；只提交结构化侦察交接，不提交漏洞结论。"
+		return fmt.Sprintf("本阶段有 %d 个独立 Agent。系统不预设角色、主题或文件范围。当前执行源码审计：优先推进已有文件和待办；尚无范围时用 file_review_update 认领一个具体源码文件，再 read_file / search_content 取证并记录结论。论坛仅在具体跨文件问题需要协作时使用，不以重新协商分工、确认身份或重读交接代替审计。", count)
 	}
+	assignment := fmt.Sprintf("本阶段有 %d 个独立 Agent。系统不预设角色、主题或文件范围。先调用 forum_roster 和 forum_threads 查看同伴，再通过 forum_post 提出候选分工；需要强提醒所有 Agent 时在正文加入 @全体成员（也支持 @all），收到提醒的 Agent 自主决定是否回应；随后用 forum_wait 等待同伴回复（等待有界，超时后继续），根据实际回复自行协商认领范围，避免重复并主动覆盖空白。不要把内部路由 ID 或启动顺序当作分工。名字从预制昵称表中即时分配，重复加001等后缀，不调用模型命名。", count)
+	assignment += "当前是侦察阶段：自行选择建图重点，并把跨范围问题发到论坛；只提交结构化侦察交接，不提交漏洞结论。"
 	return assignment
 }
 
@@ -484,7 +483,7 @@ func (t *Team) createStageLocked(stage string) {
 				a.assigned = slice
 				if len(slice) > 0 {
 					a.tools.PlanAuditScope(slice)
-					a.assignment = assignment + fmt.Sprintf("\n\n系统已把侦察地图按文件切好分给你（第 %d/%d 份，共 %d 个文件）：先用 file_review_update 认领这些文件，再逐个 read_file/search_content 审计并按需 report_finding。分工已确定，不需要为重新讨论分工反复读论坛；遇到跨文件链路再用 forum_post 简短同步。你负责：\n- %s", i+1, count, len(slice), strings.Join(slice, "\n- "))
+					a.assignment = auditTaskAssignment(count, slice, false)
 				} else {
 					a.assignment = assignment + "\n\n侦察地图的文件已分给其他成员。你没有固定文件：先读交接，然后复核他人报告的漏洞证据，或补审地图里没被认领的空白文件；不要反复读论坛确认分工。"
 				}

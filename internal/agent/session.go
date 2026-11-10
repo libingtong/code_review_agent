@@ -408,6 +408,8 @@ func (t *Team) LoadSession(path string) error {
 		saved.Snapshot.Project = sharedProject
 		a.tools.RestoreSnapshot(saved.Snapshot)
 		restoreAuditClaimState(a, saved.Snapshot)
+		restoreAuditTask(a, saved.Snapshot, count)
+		saved.Assignment = a.assignment
 		a.messages = append([]llm.Message(nil), saved.Messages...)
 		a.sanitizeMessages()
 		// Buffer IDs are process-local; restore exposes a fresh bounded state and
@@ -465,6 +467,16 @@ func (t *Team) LoadSession(path string) error {
 				w.agent.tools.PlanAuditScope(t.auditScope)
 				w.saved.Snapshot = cloneSnapshot(w.agent.tools.Snapshot())
 			}
+		}
+	}
+	for _, w := range t.workers {
+		if w.agent.phase != phaseAudit {
+			continue
+		}
+		restoreAuditTask(w.agent, w.agent.tools.Snapshot(), s.AuditAgents)
+		w.saved.Assignment = w.agent.assignment
+		if len(w.agent.messages) > 0 {
+			w.agent.sanitizeMessages()
 		}
 	}
 	t.snapshot = t.aggregateLocked()
