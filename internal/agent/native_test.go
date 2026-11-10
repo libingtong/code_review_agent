@@ -24,7 +24,7 @@ func TestNativeLoopRetriesProtocolFailuresUntilValidCall(t *testing.T) {
 			}
 			found := false
 			for _, message := range messages {
-				if message.Role == llm.RoleUser && strings.Contains(message.Content, "没有收到原生工具调用") && strings.Contains(message.Content, "第 ") {
+				if message.Role == llm.RoleUser && strings.Contains(message.Content, "原生工具协议失败") && strings.Contains(message.Content, "第 ") {
 					found = true
 				}
 			}

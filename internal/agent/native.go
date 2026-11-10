@@ -95,6 +95,47 @@ func specialToolDefinitions() []llm.ToolDefinition {
 	}
 }
 
+// normalizeNativeToolAliases accepts only the observed compatibility wrapper:
+// Compat + exact PascalCase declared name + six hexadecimal characters. The
+// declaration set belongs to this request; aliases never grant another role's tool.
+func normalizeNativeToolAliases(response *llm.ToolResponse, definitions []llm.ToolDefinition) {
+	aliases := map[string]string{}
+	ambiguous := map[string]bool{}
+	declared := map[string]bool{}
+	for _, definition := range definitions {
+		declared[definition.Name] = true
+		var name strings.Builder
+		for _, part := range strings.Split(definition.Name, "_") {
+			if part != "" {
+				name.WriteString(strings.ToUpper(part[:1]))
+				name.WriteString(part[1:])
+			}
+		}
+		base := "Compat" + name.String()
+		if previous, ok := aliases[base]; ok && previous != definition.Name {
+			ambiguous[base] = true
+		}
+		aliases[base] = definition.Name
+	}
+	for i := range response.Calls {
+		call := &response.Calls[i]
+		if declared[call.Name] || len(call.Name) <= 6 {
+			continue
+		}
+		base, suffix := call.Name[:len(call.Name)-6], call.Name[len(call.Name)-6:]
+		valid := true
+		for _, ch := range suffix {
+			if !(ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f' || ch >= 'A' && ch <= 'F') {
+				valid = false
+				break
+			}
+		}
+		if name, ok := aliases[base]; valid && ok && !ambiguous[base] {
+			call.Name = name
+		}
+	}
+}
+
 // validateNativeResponse checks every call individually. Providers may return
 // several parallel calls in one turn; the batch is no longer rejected wholesale
 // (that turned a vendor behaviour into a wasted turn), only malformed calls are.

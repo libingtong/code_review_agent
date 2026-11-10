@@ -52,6 +52,7 @@ type Agent struct {
 	verifying              bool
 	toolsDisabled          bool
 	protocolFailures       int
+	auditProgress          *auditProgressGuard
 	// forumNudged records the one-time reminder that the agent never posted.
 	forumNudged bool
 	// fileReviewCalls counts file_review_update calls: a worker that never claims a
@@ -377,6 +378,16 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 	a.runErr = nil
 	a.protocolFailures = 0
 	a.completed = false
+	if a.phase == phaseAudit && !a.verifying && !a.ircOnly {
+		if a.auditProgress == nil {
+			a.auditProgress = newAuditProgressGuard(a.tools.Snapshot())
+		}
+		if a.auditProgress.turns >= auditProgressLimitTurns {
+			a.runErr = a.auditProgress.failure()
+			emit(Event{Kind: "error", Content: a.runErr.Error()})
+			return
+		}
+	}
 	a.sanitizeMessages()
 	a.bootstrapTrace()
 	defer a.emitState(emit)
@@ -477,6 +488,18 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 		if a.runErr != nil {
 			emit(Event{Kind: "error", Content: a.runErr.Error()})
 			return
+		}
+		if a.auditProgress != nil && !a.ircOnly && !a.verifying && !a.completed {
+			warning, progressErr := a.auditProgress.observe(a.tools.Snapshot())
+			if warning != "" {
+				a.addMessage(llm.Message{Role: llm.RoleUser, Content: warning})
+				emit(Event{Kind: "info", Content: warning})
+			}
+			if progressErr != nil {
+				a.runErr = progressErr
+				emit(Event{Kind: "error", Content: progressErr.Error()})
+				return
+			}
 		}
 		a.emitState(emit)
 		if a.completed {
@@ -1080,27 +1103,34 @@ func (a *Agent) chatStream(ctx context.Context, emit func(Event)) (llm.ToolRespo
 		if err == nil && len(response.Calls) == 0 {
 			err = fmt.Errorf("请求已完成但没有原生工具调用（回答 %d 字节，推理 %d 字节），不是网络停滞", len(response.Content), len(response.Thinking))
 		}
+		hadCalls := len(response.Calls) > 0
 		if err == nil {
-			allowed := false
-			for _, definition := range a.toolDefinitions() {
-				if definition.Name == response.Calls[0].Name {
-					allowed = true
+			unsupported := ""
+			definitions := a.toolDefinitions()
+			for _, call := range response.Calls {
+				allowed := false
+				for _, definition := range definitions {
+					if definition.Name == call.Name {
+						allowed = true
+						break
+					}
+				}
+				if !allowed {
+					unsupported = call.Name
 					break
 				}
 			}
-			if !allowed {
+			if unsupported != "" {
+				a.recordResponse(response)
+				reason := "当前角色未声明或不允许该工具：" + unsupported
 				if limit := a.cfg.Agent.MaxTurnsPerStage; a.phase == phaseRecon && limit > 0 && a.turn > limit {
-					call, _ := a.recordResponse(response)
-					a.rejectTool(call, "侦察预算已用尽：只能调用 audit_plan_done")
-					return llm.ToolResponse{}, fmt.Errorf("侦察预算已用尽（%d 回合），成员尝试调用 %s 时终止；请重启后重新侦察", limit, call.Name)
+					a.recordSkippedOutputs(response.Calls, "侦察预算已用尽：只能调用 audit_plan_done")
+					return llm.ToolResponse{}, fmt.Errorf("侦察预算已用尽（%d 回合），成员尝试调用 %s 时终止；请重启后重新侦察", limit, unsupported)
 				}
-				call, _ := a.recordResponse(response)
-				if call.Name != "read_tool_buffer" {
-					a.tools.ClearBuffer()
-				}
-				a.rejectTool(call, "当前角色未声明或不允许该工具："+call.Name)
+				a.tools.ClearBuffer()
+				a.recordSkippedOutputs(response.Calls, reason)
 				response = llm.ToolResponse{}
-				err = fmt.Errorf("当前角色未声明或不允许该工具：%s", call.Name)
+				err = fmt.Errorf("%s", reason)
 			}
 		}
 		if err == nil {
@@ -1111,17 +1141,31 @@ func (a *Agent) chatStream(ctx context.Context, emit func(Event)) (llm.ToolRespo
 		// A text answer that carried no native call is discarded, not replayed: feeding
 		// it back teaches the model to imitate "tool calls written as prose", which is
 		// the failure mode that made the moderator loop for hundreds of turns.
-		applog.L().Warnf("%s 回合未返回原生工具调用（第 %d 次）：%s",
-			a.id, a.protocolFailures+1, briefText(joinAssistantMessage(response.Thinking, response.Content), 200))
+		if hadCalls || errors.Is(err, llm.ErrToolProtocol) {
+			applog.L().Warnf("%s 原生工具协议失败（第 %d 次）：%v", a.id, a.protocolFailures+1, err)
+		} else {
+			applog.L().Warnf("%s 回合未返回原生工具调用（第 %d 次）：%s",
+				a.id, a.protocolFailures+1, briefText(joinAssistantMessage(response.Thinking, response.Content), 200))
+		}
 		a.protocolFailures++
 		limit := a.cfg.Agent.MaxProtocolFailures
 		if limit <= 0 {
 			limit = 3 // unset config (tests, programmatic callers) must still be bounded
 		}
 		if a.protocolFailures >= limit {
+			if hadCalls || errors.Is(err, llm.ErrToolProtocol) {
+				return llm.ToolResponse{}, fmt.Errorf("连续 %d 次原生工具协议失败，已停止该成员：%w", a.protocolFailures, err)
+			}
 			return llm.ToolResponse{}, fmt.Errorf("连续 %d 次没有返回原生工具调用，已停止该成员（该渠道模型可能不支持工具调用，或上下文已严重漂移）", a.protocolFailures)
 		}
 		feedback := fmt.Sprintf("本回合没有收到原生工具调用（第 %d 次），你的文字回答未被执行。请立即通过原生 function call 调用一个当前可用工具继续工作，例如 review_state、read_file、forum_roster；不要用文字或代码块描述调用。", a.protocolFailures)
+		if hadCalls || errors.Is(err, llm.ErrToolProtocol) {
+			var names []string
+			for _, definition := range a.toolDefinitions() {
+				names = append(names, definition.Name)
+			}
+			feedback = fmt.Sprintf("本回合原生工具协议失败（第 %d 次）：%v。仅使用本回合声明的工具名：%s；通过原生 function call 传入完整 JSON 对象参数。", a.protocolFailures, err, strings.Join(names, "、"))
+		}
 		if len(a.messages) > 0 && a.messages[len(a.messages)-1].Role == llm.RoleUser && a.messages[len(a.messages)-1].Content == feedback {
 			continue
 		}
@@ -1341,7 +1385,8 @@ func (a *Agent) chatStreamOnce(ctx context.Context, emit func(Event)) (llm.ToolR
 	}
 	var sawContent, sawThinking bool
 	requestCtx := a.responsesRequestContext(ctx)
-	response, err := client.ChatTools(requestCtx, a.messages, a.toolDefinitions(), func(delta llm.Delta) error {
+	definitions := a.toolDefinitions()
+	response, err := client.ChatTools(requestCtx, a.messages, definitions, func(delta llm.Delta) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -1375,6 +1420,7 @@ func (a *Agent) chatStreamOnce(ctx context.Context, emit func(Event)) (llm.ToolR
 	if !sawThinking && response.Thinking != "" {
 		emit(Event{Kind: "think_delta", Content: response.Thinking})
 	}
+	normalizeNativeToolAliases(&response, definitions)
 	// Notifications were delivered by the successful request even if its calls
 	// subsequently fail the local fail-closed protocol gate.
 	a.forumPending = ""

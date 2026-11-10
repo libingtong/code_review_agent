@@ -531,6 +531,11 @@ func (t *Team) Run(ctx context.Context, input string, emit func(Event)) {
 	runCtx, cancelRun := context.WithCancel(ctx)
 	t.cancel = cancelRun
 	t.running = true
+	// A new explicit team run grants a fresh progress window. Moderator/IRC
+	// reactivations inside this run must not reset a stalled worker's guard.
+	for _, w := range t.workers {
+		w.agent.auditProgress = nil
+	}
 	t.done = make(chan struct{})
 	t.emitter = emit
 	runCtx = t.startBudgetLocked(runCtx, cancelRun)

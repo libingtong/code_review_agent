@@ -690,9 +690,9 @@ func (m *attemptMeter) Add(update llm.UsageUpdate) {
 		m.seen = map[uint64]int64{}
 	}
 	previous := m.seen[update.RequestID]
-	if delta := update.TotalTokens - previous; delta > 0 {
-		m.total += delta
-	}
+	// Provider usage can correct the initial estimate downward. Keep the latest
+	// cumulative value for each request instead of its high-water mark.
+	m.total += update.TotalTokens - previous
 	m.seen[update.RequestID] = update.TotalTokens
 }
 
