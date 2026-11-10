@@ -154,6 +154,8 @@ agent:
   max_tool_result_chars: 12000
   max_tools_per_turn: 1        # 1 = 严格逐个；2-3 = 允许批量只读调用
   max_turns: 0                  # 仅普通模式生效
+  audit_progress_warning_turns: 8 # 无新结论窗口：默认 8 回合提醒
+  audit_progress_limit_turns: 16  # 默认 16 回合停止成员，保留状态
   retry_attempts: 3
   session_dir: sessions
   log_session: false
@@ -163,6 +165,8 @@ agent:
   forum_wait_seconds: 60
   auto_plan: true
 ```
+
+无新结论窗口在无限模式下同样生效。两个阈值必须为正整数，且 `audit_progress_warning_turns < audit_progress_limit_turns`；省略时默认 8/16，显式 0 会报配置错误。新文件/分页读取不算审阅结论；新增文件、变量、链路结论或漏洞才重置窗口。管理员自动唤醒不会重置，显式 `go` 开始的新团队运行会重置。
 
 ## logging
 

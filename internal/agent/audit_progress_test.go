@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"code-review-agent/internal/config"
 	"code-review-agent/internal/llm"
 	"code-review-agent/internal/tools"
 )
@@ -28,16 +29,32 @@ func TestAuditProgressStopsRepeatedReadsWithoutManufacturingCompletion(t *testin
 			t.Fatal("guard invented a review conclusion")
 		}
 	}
-	// An automatic moderator reactivation must not buy another 128 requests.
+	// An automatic moderator reactivation must not buy another progress window.
 	a.Run(context.Background(), "continue", func(Event) {})
 	if calls != auditProgressLimitTurns {
 		t.Fatalf("reactivation reset guard: calls=%d", calls)
 	}
 }
 
+func TestAuditProgressCustomWindowAndMessages(t *testing.T) {
+	g := newAuditProgressGuard(tools.Snapshot{}, config.AgentConfig{AuditProgressWarningTurns: 2, AuditProgressLimitTurns: 4})
+	for turn := 1; turn <= 4; turn++ {
+		warning, err := g.observe(tools.Snapshot{})
+		if turn == 2 && (!strings.Contains(warning, "连续 2 个") || !strings.Contains(warning, "达到 4 回合")) {
+			t.Fatalf("custom warning: %s", warning)
+		}
+		if turn != 2 && warning != "" {
+			t.Fatalf("unexpected warning at %d", turn)
+		}
+		if (err != nil) != (turn == 4) {
+			t.Fatalf("custom stop at %d: %v", turn, err)
+		}
+	}
+}
+
 func TestAuditProgressOnlyNewConclusionsResetWindow(t *testing.T) {
 	s := tools.Snapshot{Files: []tools.FileReview{{Path: "a.go", Status: "reviewing"}}}
-	g := newAuditProgressGuard(s)
+	g := newAuditProgressGuard(s, config.AgentConfig{})
 	for i := 0; i < auditProgressWarningTurns; i++ {
 		warning, err := g.observe(s)
 		if err != nil {

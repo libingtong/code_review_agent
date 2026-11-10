@@ -535,6 +535,7 @@ func (t *Team) Run(ctx context.Context, input string, emit func(Event)) {
 	// reactivations inside this run must not reset a stalled worker's guard.
 	for _, w := range t.workers {
 		w.agent.auditProgress = nil
+		w.agent.duplicateReads = duplicateReadGuard{}
 	}
 	t.done = make(chan struct{})
 	t.emitter = emit

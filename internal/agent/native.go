@@ -296,6 +296,20 @@ func (a *Agent) executeNativeTool(ctx context.Context, emit func(Event), call ll
 	}
 	emit(Event{Kind: "tool", Content: "calling " + call.Name})
 	result, full := a.callTool(ctx, emit, ToolCall{Name: call.Name, Arguments: json.RawMessage(call.Arguments)})
+	if a.phase == phaseAudit && !a.verifying && !a.ircOnly {
+		if replacement, notice := a.duplicateReads.inspect(call, full, a.tools.Workspace(), func(callID string) bool {
+			for _, message := range a.messages {
+				if message.Type == "function_call_output" && message.CallID == callID {
+					return true
+				}
+			}
+			return false
+		}); replacement != "" {
+			full = replacement
+			result = a.tools.BoundResult(call.Name, full)
+			emit(Event{Kind: "info", Content: notice})
+		}
+	}
 	a.recordToolOutput(call, result, full)
 	return full
 }

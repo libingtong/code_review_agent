@@ -5,21 +5,25 @@ import (
 	"strconv"
 	"strings"
 
+	"code-review-agent/internal/config"
 	"code-review-agent/internal/tools"
 )
 
 // An audit can be unbounded in duration without allowing an unbounded sequence
 // of reads that never produces a conclusion. No status is changed by this guard.
-const auditProgressWarningTurns = 64
-const auditProgressLimitTurns = 128
+const auditProgressWarningTurns = 8
+const auditProgressLimitTurns = 16
 
 type auditProgressGuard struct {
-	turns int
-	known map[string]bool
+	turns        int
+	warningTurns int
+	limitTurns   int
+	known        map[string]bool
 }
 
-func newAuditProgressGuard(snapshot tools.Snapshot) *auditProgressGuard {
-	g := &auditProgressGuard{known: make(map[string]bool)}
+func newAuditProgressGuard(snapshot tools.Snapshot, cfg config.AgentConfig) *auditProgressGuard {
+	warning, limit := cfg.AuditProgressTurns()
+	g := &auditProgressGuard{known: make(map[string]bool), warningTurns: warning, limitTurns: limit}
 	g.capture(snapshot)
 	return g
 }
@@ -73,11 +77,11 @@ func (g *auditProgressGuard) observe(snapshot tools.Snapshot) (warning string, e
 		return "", nil
 	}
 	g.turns++
-	if g.turns >= auditProgressLimitTurns {
+	if g.turns >= g.limitTurns {
 		return "", g.failure()
 	}
-	if g.turns == auditProgressWarningTurns {
-		return "连续 64 个审计回合没有新增审阅结论。请收敛当前证据，给出有依据的 file_review_update 结论或变量/链路结论，发现问题则 report_finding；重复读取、列目录和修改 reviewing 笔记不算完成。达到 128 回合将暂停该成员并保留进度，不会自动标记文件完成。", nil
+	if g.turns == g.warningTurns {
+		return fmt.Sprintf("连续 %d 个审计回合没有新增审阅结论。请收敛当前证据，给出有依据的 file_review_update 结论或变量/链路结论，发现问题则 report_finding；重复读取、列目录和修改 reviewing 笔记不算完成。达到 %d 回合将暂停该成员并保留进度，不会自动标记文件完成。", g.warningTurns, g.limitTurns), nil
 	}
 	return "", nil
 }

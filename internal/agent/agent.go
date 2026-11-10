@@ -53,6 +53,7 @@ type Agent struct {
 	toolsDisabled          bool
 	protocolFailures       int
 	auditProgress          *auditProgressGuard
+	duplicateReads         duplicateReadGuard
 	// forumNudged records the one-time reminder that the agent never posted.
 	forumNudged bool
 	// fileReviewCalls counts file_review_update calls: a worker that never claims a
@@ -380,9 +381,9 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 	a.completed = false
 	if a.phase == phaseAudit && !a.verifying && !a.ircOnly {
 		if a.auditProgress == nil {
-			a.auditProgress = newAuditProgressGuard(a.tools.Snapshot())
+			a.auditProgress = newAuditProgressGuard(a.tools.Snapshot(), a.cfg.Agent)
 		}
-		if a.auditProgress.turns >= auditProgressLimitTurns {
+		if a.auditProgress.turns >= a.auditProgress.limitTurns {
 			a.runErr = a.auditProgress.failure()
 			emit(Event{Kind: "error", Content: a.runErr.Error()})
 			return

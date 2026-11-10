@@ -113,7 +113,9 @@ type AgentConfig struct {
 	// worker can read files for hundreds of turns and never submit its map.
 	MaxTurnsPerStage int `yaml:"max_turns_per_stage"`
 	// AuditNudgeTurns forces a worker that never claimed a file to start auditing.
-	AuditNudgeTurns int `yaml:"audit_nudge_turns"`
+	AuditNudgeTurns           int `yaml:"audit_nudge_turns"`
+	AuditProgressWarningTurns int `yaml:"audit_progress_warning_turns"`
+	AuditProgressLimitTurns   int `yaml:"audit_progress_limit_turns"`
 	// MinAuditFiles rejects a recon handoff that maps too few files: a thin map
 	// makes the audit stage shallow (36 files → 5 findings, 5 files → 0 findings).
 	MinAuditFiles        int     `yaml:"min_audit_files"`
@@ -164,7 +166,7 @@ func Load(path string) (Config, error) {
 	// Seed required defaults before decoding so explicit zero remains invalid.
 	cfg := Config{
 		OpenAI: OpenAIConfig{MaxContextTokens: 32000, MaxOutputTokens: 4096},
-		Agent:  AgentConfig{CompressAtRatio: 0.75, BudgetHours: 8},
+		Agent:  AgentConfig{CompressAtRatio: 0.75, BudgetHours: 8, AuditProgressWarningTurns: 8, AuditProgressLimitTurns: 16},
 	}
 	var document yaml.Node
 	if err := yaml.Unmarshal(data, &document); err != nil {
@@ -223,6 +225,9 @@ func Load(path string) (Config, error) {
 	}
 	if cfg.Agent.MinAuditFiles < 0 || cfg.Agent.MinAuditFiles > 200 {
 		return Config{}, fmt.Errorf("agent.min_audit_files must be between 0 and 200")
+	}
+	if cfg.Agent.AuditProgressWarningTurns <= 0 || cfg.Agent.AuditProgressLimitTurns <= cfg.Agent.AuditProgressWarningTurns {
+		return Config{}, fmt.Errorf("agent.audit_progress_warning_turns and agent.audit_progress_limit_turns must be positive, with warning < limit")
 	}
 	if cfg.Agent.AuditNudgeTurns < 5 || cfg.Agent.AuditNudgeTurns > 500 {
 		return Config{}, fmt.Errorf("agent.audit_nudge_turns must be between 5 and 500")
@@ -415,6 +420,19 @@ func applyDefaults(cfg *Config) {
 	if cfg.Agent.ForumWaitSeconds == 0 {
 		cfg.Agent.ForumWaitSeconds = 60
 	}
+}
+
+// AuditProgressTurns gives programmatically constructed configs the same defaults
+// as Load. Explicit zero in YAML remains invalid because Load seeds before decode.
+func (cfg AgentConfig) AuditProgressTurns() (warning, limit int) {
+	warning, limit = cfg.AuditProgressWarningTurns, cfg.AuditProgressLimitTurns
+	if warning == 0 {
+		warning = 8
+	}
+	if limit == 0 {
+		limit = 16
+	}
+	return
 }
 
 func (cfg AgentConfig) ModeratorIsEnabled() bool {

@@ -54,6 +54,9 @@ func TestManySmallTurnsKeepHistoryPrefixWithoutPeriodicCompaction(t *testing.T) 
 		return "", nil
 	}}
 	a = tokenBudgetWorker(t, client, compressor)
+	// This fixture exercises 120 history appends, not the progress watchdog.
+	a.cfg.Agent.AuditProgressWarningTurns = 121
+	a.cfg.Agent.AuditProgressLimitTurns = 122
 	a.Run(context.Background(), "inspect", func(Event) {})
 	if calls != 120 {
 		t.Fatalf("did not exercise many small turns: %d (%v)", calls, a.runErr)
