@@ -529,10 +529,13 @@ func (a *Agent) phaseToolCorrection(name string) string {
 			limit = configured
 		}
 		if a.turn > limit && a.fileReviewCalls == 0 {
+			if forum.IsTool(name) || name == "load_skill" || name == "read_handoff" || name == "review_state" {
+				return "审计尚未认领文件；论坛、技能、交接和状态浏览不能替代源码审计。请先调用 file_review_update 认领具体文件，再调用 read_file / search_content 取证。"
+			}
 			switch name {
 			case "file_review_update", "read_file", "search_content", "search_context", "list_files",
 				"todo_create", "todo_update", "project_note_update", "report_finding", "commit_finding",
-				"read_tool_buffer", "load_skill", "end_audit":
+				"read_tool_buffer", "end_audit":
 				return ""
 			}
 			return "已经进入审计阶段 " + strconv.Itoa(a.turn) + " 回合但还没有认领任何文件：请先用 file_review_update 认领文件，再 read_file 读取源码。"

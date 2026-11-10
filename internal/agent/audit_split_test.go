@@ -48,7 +48,7 @@ func TestAuditStagePreAssignsScopeSlices(t *testing.T) {
 func TestAuditClaimGateBlocksForumUntilFirstClaim(t *testing.T) {
 	team := newTestTeam(t, &noticeClient{})
 	worker := &Agent{cfg: team.cfg, phase: phaseAudit, turn: 5}
-	for _, name := range []string{"forum_roster", "read_handoff", "review_state"} {
+	for _, name := range []string{"forum_roster", "forum_read", "forum_post", "read_handoff", "review_state", "load_skill"} {
 		if msg := worker.phaseToolCorrection(name); !strings.Contains(msg, "认领") {
 			t.Fatalf("%s must be gated before the first claim: %q", name, msg)
 		}
