@@ -591,7 +591,9 @@ func TestReconTurnLimitStopsRunawayWorker(t *testing.T) {
 	}
 	nudges := 0
 	for _, message := range a.messages {
-		if strings.Contains(message.Content, "侦察预算已用") {
+		// Count pacing reminders, not paired tool-error outputs or protocol
+		// corrections, which also describe the exhausted recon budget.
+		if message.Role == llm.RoleUser && strings.HasPrefix(message.Content, "侦察预算已用尽（") {
 			nudges++
 		}
 	}

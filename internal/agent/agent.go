@@ -421,10 +421,6 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 					emit(Event{Kind: "error", Content: a.runErr.Error()})
 					return
 				}
-				if stage, text := a.reconPacing(); stage > a.stageNudge {
-					a.stageNudge = stage
-					a.addMessage(llm.Message{Role: llm.RoleUser, Content: text})
-				}
 			}
 		}
 		if !a.cfg.Agent.InfiniteMode && a.cfg.Agent.MaxTurns > 0 && turn > a.cfg.Agent.MaxTurns {
@@ -433,6 +429,14 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 			return
 		}
 		a.turn++
+		// Pace the request about to be sent, using the same turn as its tool
+		// permissions. The first handoff-only request must include that reminder.
+		if a.phase == phaseRecon {
+			if stage, text := a.reconPacing(); stage > a.stageNudge {
+				a.stageNudge = stage
+				a.addMessage(llm.Message{Role: llm.RoleUser, Content: text})
+			}
+		}
 		emit(Event{Kind: "turn"})
 		activityCtx, finish := a.beginActivity(ctx)
 		if a.deliverIRC != nil {
@@ -1132,8 +1136,10 @@ func (a *Agent) chatStream(ctx context.Context, emit func(Event)) (llm.ToolRespo
 				a.recordResponse(response)
 				reason := "当前角色未声明或不允许该工具：" + unsupported
 				if limit := a.cfg.Agent.MaxTurnsPerStage; a.phase == phaseRecon && limit > 0 && a.turn > limit {
-					a.recordSkippedOutputs(response.Calls, "侦察预算已用尽：只能调用 audit_plan_done")
-					return llm.ToolResponse{}, fmt.Errorf("侦察预算已用尽（%d 回合），成员尝试调用 %s 时终止；请重启后重新侦察", limit, unsupported)
+					// Preserve the bounded native-protocol correction path. A stale
+					// read call must receive its output before retrying the sole
+					// allowed handoff tool, rather than aborting on the first mistake.
+					reason = "侦察预算已用尽：只能调用 audit_plan_done；当前不允许工具：" + unsupported
 				}
 				a.tools.ClearBuffer()
 				a.recordSkippedOutputs(response.Calls, reason)
