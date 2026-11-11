@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -99,5 +100,50 @@ func TestAuditProgressOnlyNewConclusionsResetWindow(t *testing.T) {
 	g.observe(s)
 	if g.turns != 0 {
 		t.Fatal("variable conclusion did not reset window")
+	}
+}
+
+func TestAuditProgressCreditsGenuineBufferPagingButStaysBounded(t *testing.T) {
+	g := newAuditProgressGuard(tools.Snapshot{}, config.AgentConfig{})
+	page := func(offset int64, ok, eof bool) string {
+		data, _ := json.Marshal(map[string]any{"ok": ok, "buffer_id": "buffer-1", "offset": offset, "next_offset": offset + 4096, "eof": eof})
+		return string(data)
+	}
+	// Stale or duplicate pages are still stalls: a failed page must not buy time.
+	stale := `{"ok":false,"buffer_id":"","error":"buffer 已失效或属于另一个 Agent"}`
+	for turn := 1; turn <= auditProgressWarningTurns; turn++ {
+		if g.creditPage("read_tool_buffer", stale) {
+			t.Fatal("failed page credited")
+		}
+		if _, err := g.observe(tools.Snapshot{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if g.turns != auditProgressWarningTurns {
+		t.Fatalf("failed pages advanced window: %d", g.turns)
+	}
+	// Real pagination keeps the worker alive past the hard limit.
+	for i := 0; i < auditProgressPageCredits; i++ {
+		offset := int64(i * 4096)
+		if !g.creditPage("read_tool_buffer", page(offset, true, false)) {
+			t.Fatalf("genuine page %d not credited", i)
+		}
+		if g.creditPage("read_tool_buffer", page(offset, true, false)) {
+			t.Fatal("same offset credited twice")
+		}
+		if _, err := g.observe(tools.Snapshot{}); err != nil {
+			t.Fatalf("paging killed at page %d: %v", i, err)
+		}
+	}
+	// The cap still forces a conclusion instead of allowing endless paging.
+	if g.creditPage("read_tool_buffer", page(int64(auditProgressPageCredits*4096), true, false)) {
+		t.Fatal("credit cap not enforced")
+	}
+	var err error
+	for i := 0; i <= auditProgressLimitTurns && err == nil; i++ {
+		_, err = g.observe(tools.Snapshot{})
+	}
+	if err == nil || !strings.Contains(err.Error(), "审计停滞") {
+		t.Fatalf("unbounded paging escaped the guard: %v", err)
 	}
 }

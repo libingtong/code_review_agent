@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -14,18 +15,58 @@ import (
 const auditProgressWarningTurns = 8
 const auditProgressLimitTurns = 16
 
+// Paging a large tool result is how a worker reads evidence beyond the first
+// page, and each page is new material rather than a repeated read. Credit is
+// capped so a worker cannot page forever instead of concluding.
+const auditProgressPageCredits = 24
+
 type auditProgressGuard struct {
 	turns        int
 	warningTurns int
 	limitTurns   int
 	known        map[string]bool
+	pageOffsets  map[string]int64
+	pageCredits  int
 }
 
 func newAuditProgressGuard(snapshot tools.Snapshot, cfg config.AgentConfig) *auditProgressGuard {
 	warning, limit := cfg.AuditProgressTurns()
-	g := &auditProgressGuard{known: make(map[string]bool), warningTurns: warning, limitTurns: limit}
+	g := &auditProgressGuard{known: make(map[string]bool), pageOffsets: make(map[string]int64), warningTurns: warning, limitTurns: limit}
 	g.capture(snapshot)
 	return g
+}
+
+// creditPage records that a read_tool_buffer call advanced to a new offset of
+// its buffer. Only a successful page that starts beyond every already credited
+// offset counts; the final (EOF) page does not, because after it the worker owes
+// a conclusion rather than more paging.
+func (g *auditProgressGuard) creditPage(tool, result string) bool {
+	if tool != "read_tool_buffer" {
+		return false
+	}
+	var page struct {
+		OK         bool   `json:"ok"`
+		BufferID   string `json:"buffer_id"`
+		Offset     int64  `json:"offset"`
+		NextOffset int64  `json:"next_offset"`
+		EOF        bool   `json:"eof"`
+	}
+	if err := json.Unmarshal([]byte(result), &page); err != nil {
+		return false
+	}
+	if !page.OK || page.BufferID == "" || page.EOF || page.NextOffset <= page.Offset {
+		return false
+	}
+	if last, seen := g.pageOffsets[page.BufferID]; seen && page.Offset <= last {
+		return false
+	}
+	if g.pageCredits >= auditProgressPageCredits {
+		return false
+	}
+	g.pageOffsets[page.BufferID] = page.Offset
+	g.pageCredits++
+	g.turns = 0
+	return true
 }
 
 func (g *auditProgressGuard) capture(snapshot tools.Snapshot) bool {

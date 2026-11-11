@@ -467,6 +467,12 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 			executed++
 			lastExecuted = index
 			fullResult := a.executeNativeTool(activityCtx, emit, batchCall)
+			if a.auditProgress != nil {
+				// A worker paging a large result is reading new evidence; charging
+				// those pages as stalls killed workers mid-read (observed: 5 pages
+				// of a 29KB buffer before EOF, then stopped as "no progress").
+				a.auditProgress.creditPage(batchCall.Name, fullResult)
+			}
 			if batchCall.Name == "audit_plan_done" && a.plan != nil && auditPlanAccepted(fullResult) {
 				a.completed = true
 			}
