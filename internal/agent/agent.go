@@ -523,6 +523,45 @@ func (a *Agent) Run(ctx context.Context, input string, emit func(Event)) {
 	}
 }
 
+// convergenceCorrection rejects fresh evidence gathering once the worker has spent
+// its progress window. The tools stay declared on purpose: the model must get an
+// actionable reason and switch to writing conclusions, not fail protocol validation.
+func (a *Agent) convergenceCorrection(name string) string {
+	if a.phase != phaseAudit || a.verifying || a.ircOnly || a.auditProgress == nil || !a.auditProgress.converging() {
+		return ""
+	}
+	switch name {
+	case "file_review_update", "variable_review_update", "flow_review_update", "todo_create", "todo_update",
+		"project_note_update", "report_finding", "commit_finding", "verify_finding", "end_audit", "read_tool_buffer",
+		"forum_post", "forum_read", "forum_threads", "forum_wait", "forum_roster":
+		return ""
+	}
+	message := "连续 " + strconv.Itoa(a.auditProgress.turns) + " 回合没有新增审阅结论：现在只能提交结论或写入 todo。请立刻用 file_review_update 写出已读文件的结论（无漏洞也要写覆盖点与理由）、用 variable_review_update/flow_review_update 记录变量与跨文件链路，发现问题用 report_finding；提交后窗口重置，可以继续读新文件。"
+	if pending := a.pendingConclusionFiles(3); len(pending) > 0 {
+		message += " 这些文件已经读过但还没有结论，先给其中一个写结论：" + strings.Join(pending, "、")
+	}
+	return message
+}
+
+// pendingConclusionFiles names read-but-unconcluded files so a blocked worker has a
+// concrete next action instead of retrying the rejected read.
+func (a *Agent) pendingConclusionFiles(limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	var paths []string
+	for _, file := range a.tools.Snapshot().Files {
+		if file.Status != "reviewing" && file.Status != "in_progress" {
+			continue
+		}
+		paths = append(paths, file.Path)
+		if len(paths) >= limit {
+			break
+		}
+	}
+	return paths
+}
+
 func (a *Agent) phaseToolCorrection(name string) string {
 	if a.phase == phaseModerator {
 		if moderatorAllowedTool(name) {

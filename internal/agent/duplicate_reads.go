@@ -31,11 +31,13 @@ type duplicateReadGuard struct {
 // and changed directory listings must remain readable. Local reads still verify
 // freshness; the third unchanged result is withheld from model context/buffers.
 // Failed calls and buffer pagination never consume this success-only allowance.
-func (g *duplicateReadGuard) inspect(call llm.FunctionCall, full, workspace string, evidenceVisible ...func(string) bool) (replacement, notice string) {
+// novel reports material the worker has not seen before: reading a new file or a
+// new range is progress, repeating an unchanged result is not.
+func (g *duplicateReadGuard) inspect(call llm.FunctionCall, full, workspace string, evidenceVisible ...func(string) bool) (replacement, notice string, novel bool) {
 	switch call.Name {
 	case "read_file", "list_files", "search_content", "search_context":
 	default:
-		return "", ""
+		return "", "", false
 	}
 	var outcome struct {
 		OK      bool            `json:"ok"`
@@ -44,15 +46,15 @@ func (g *duplicateReadGuard) inspect(call llm.FunctionCall, full, workspace stri
 		Message string          `json:"message"`
 	}
 	if json.Unmarshal([]byte(full), &outcome) != nil || !outcome.OK || len(outcome.Data) == 0 {
-		return "", ""
+		return "", "", false
 	}
 	args, err := canonicalReadArguments(call, outcome.Data, workspace)
 	if err != nil {
-		return "", ""
+		return "", "", false
 	}
 	var data interface{}
 	if json.Unmarshal(outcome.Data, &data) != nil {
-		return "", ""
+		return "", "", false
 	}
 	canonical, _ := json.Marshal(data)
 	// Truncation is part of the observed result, not a transient buffer ID.
@@ -72,7 +74,8 @@ func (g *duplicateReadGuard) inspect(call llm.FunctionCall, full, workspace stri
 		}
 		delete(g.entries, oldest)
 	}
-	if !exists || entry.content != fingerprint {
+	novel = !exists || entry.content != fingerprint
+	if novel {
 		entry = duplicateReadEntry{content: fingerprint, firstCallID: call.CallID}
 	}
 	if entry.count < 3 {
@@ -86,7 +89,7 @@ func (g *duplicateReadGuard) inspect(call llm.FunctionCall, full, workspace stri
 		entry.lastEvidenceID = call.CallID
 	}
 	if entry.count < 2 {
-		return "", ""
+		return "", "", novel
 	}
 	reference := fmt.Sprintf("同参数且内容未变；已有结果 call_id=%s。请使用已有证据分析并提交结论，或读取新文件/新行范围。", entry.firstCallID)
 	if entry.count >= 3 {
@@ -103,7 +106,7 @@ func (g *duplicateReadGuard) inspect(call llm.FunctionCall, full, workspace stri
 		} else {
 			notice = "重复读取已拦截（第3次及以后）：" + reference
 			encoded, _ := json.Marshal(tools.Result{OK: false, Error: notice})
-			return string(encoded), notice
+			return string(encoded), notice, false
 		}
 	} else {
 		notice = "重复读取提醒（第2次）：" + reference + "再次获取相同结果将被拦截。"
@@ -115,7 +118,7 @@ func (g *duplicateReadGuard) inspect(call llm.FunctionCall, full, workspace stri
 		Data    json.RawMessage `json:"data"`
 		Trunc   bool            `json:"truncated,omitempty"`
 	}{true, notice + outcome.Message, outcome.Data, outcome.Trunc})
-	return string(encoded), notice
+	return string(encoded), notice, false
 }
 
 func byteBool(value bool) byte {

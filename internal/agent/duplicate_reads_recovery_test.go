@@ -14,7 +14,8 @@ func TestDuplicateReadRecoveryOnceWhenEvidenceLeavesVisibleHistory(t *testing.T)
 	full := `{"ok":true,"data":{"path":"a.go","offset":1,"limit":1,"lines":[{"line":1,"text":"evidence"}]}}`
 	visible := map[string]bool{}
 	inspect := func(id string) (string, string) {
-		return g.inspect(llm.FunctionCall{CallID: id, Name: "read_file", Arguments: `{"path":"a.go"}`}, full, "/workspace", func(id string) bool { return visible[id] })
+		replacement, notice, _ := g.inspect(llm.FunctionCall{CallID: id, Name: "read_file", Arguments: `{"path":"a.go"}`}, full, "/workspace", func(id string) bool { return visible[id] })
+		return replacement, notice
 	}
 	inspect("first")
 	visible["first"] = true

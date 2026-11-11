@@ -286,6 +286,10 @@ func (a *Agent) executeNativeTool(ctx context.Context, emit func(Event), call ll
 		a.rejectTool(call, reason)
 		return ""
 	}
+	if reason := a.convergenceCorrection(call.Name); reason != "" {
+		a.rejectTool(call, reason)
+		return ""
+	}
 	if call.Name == "end_audit" {
 		if blocker := a.endAuditNeedsConfirmation(); blocker != "" {
 			a.rejectTool(call, blocker)
@@ -297,7 +301,7 @@ func (a *Agent) executeNativeTool(ctx context.Context, emit func(Event), call ll
 	emit(Event{Kind: "tool", Content: "calling " + call.Name})
 	result, full := a.callTool(ctx, emit, ToolCall{Name: call.Name, Arguments: json.RawMessage(call.Arguments)})
 	if a.phase == phaseAudit && !a.verifying && !a.ircOnly {
-		if replacement, notice := a.duplicateReads.inspect(call, full, a.tools.Workspace(), func(callID string) bool {
+		if replacement, notice, novel := a.duplicateReads.inspect(call, full, a.tools.Workspace(), func(callID string) bool {
 			for _, message := range a.messages {
 				if message.Type == "function_call_output" && message.CallID == callID {
 					return true
@@ -308,6 +312,8 @@ func (a *Agent) executeNativeTool(ctx context.Context, emit func(Event), call ll
 			full = replacement
 			result = a.tools.BoundResult(call.Name, full)
 			emit(Event{Kind: "info", Content: notice})
+		} else if novel && a.auditProgress != nil {
+			a.auditProgress.creditEvidence()
 		}
 	}
 	a.recordToolOutput(call, result, full)

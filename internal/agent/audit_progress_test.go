@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -145,5 +146,81 @@ func TestAuditProgressCreditsGenuineBufferPagingButStaysBounded(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "审计停滞") {
 		t.Fatalf("unbounded paging escaped the guard: %v", err)
+	}
+}
+
+func TestAuditProgressCreditsNovelEvidenceButStaysCapped(t *testing.T) {
+	g := newAuditProgressGuard(tools.Snapshot{}, config.AgentConfig{})
+	snapshot := tools.Snapshot{}
+	for i := 0; i < auditProgressEvidenceCredits; i++ {
+		if !g.creditEvidence() {
+			t.Fatalf("credit %d refused below cap", i)
+		}
+		for turn := 0; turn < auditProgressLimitTurns-1; turn++ {
+			if _, err := g.observe(snapshot); err != nil {
+				t.Fatalf("credit %d stopped early: %v", i, err)
+			}
+		}
+	}
+	if g.creditEvidence() {
+		t.Fatal("credit granted past the cap")
+	}
+	var err error
+	for turn := 0; turn < auditProgressLimitTurns && err == nil; turn++ {
+		_, err = g.observe(snapshot)
+	}
+	if err == nil || !strings.Contains(err.Error(), "审计停滞") {
+		t.Fatalf("uncapped read sweep was not stopped: %v", err)
+	}
+}
+
+func TestAuditProgressKeepsReadingDistinctFilesPastTheStallWindow(t *testing.T) {
+	calls := 0
+	client := &noticeClient{tools: func(_ context.Context, _ []llm.Message) (llm.ToolResponse, error) {
+		calls++
+		if calls > auditProgressLimitTurns+2 {
+			return toolReply("end_audit", map[string]any{"summary": "done"}), nil
+		}
+		return toolReply("search_content", map[string]any{"pattern": fmt.Sprintf("needle-%d", calls), "path": "."}), nil
+	}}
+	team := newTestTeam(t, client)
+	team.createStageLocked(phaseAudit)
+	a := team.workers[0].agent
+	a.cfg.Agent.InfiniteMode = true
+	a.Run(context.Background(), "inspect", func(Event) {})
+	if a.runErr != nil && strings.Contains(a.runErr.Error(), "审计停滞") {
+		t.Fatalf("distinct new evidence was treated as spinning: calls=%d err=%v", calls, a.runErr)
+	}
+	if calls <= auditProgressLimitTurns {
+		t.Fatalf("worker never got past the stall window: calls=%d", calls)
+	}
+}
+
+func TestAuditProgressConvergenceGateBlocksEvidenceToolsOnly(t *testing.T) {
+	team := newTestTeam(t, &noticeClient{})
+	team.createStageLocked(phaseAudit)
+	a := team.workers[0].agent
+	a.cfg.Agent.InfiniteMode = true
+	a.auditProgress = newAuditProgressGuard(tools.Snapshot{}, config.AgentConfig{})
+	for i := 0; i < auditProgressWarningTurns; i++ {
+		a.auditProgress.observe(tools.Snapshot{})
+	}
+	if !a.auditProgress.converging() {
+		t.Fatal("guard did not reach the convergence window")
+	}
+	for _, tool := range []string{"read_file", "search_content", "list_files", "review_state", "read_handoff", "git_inspect"} {
+		if reason := a.convergenceCorrection(tool); !strings.Contains(reason, "提交结论") {
+			t.Fatalf("%s not blocked: %q", tool, reason)
+		}
+	}
+	for _, tool := range []string{"file_review_update", "variable_review_update", "flow_review_update", "report_finding", "verify_finding", "todo_update"} {
+		if reason := a.convergenceCorrection(tool); reason != "" {
+			t.Fatalf("%s blocked: %q", tool, reason)
+		}
+	}
+	// A fresh conclusion reopens the reading window.
+	a.auditProgress.turns = 0
+	if reason := a.convergenceCorrection("read_file"); reason != "" {
+		t.Fatalf("read_file still blocked after conclusion: %q", reason)
 	}
 }

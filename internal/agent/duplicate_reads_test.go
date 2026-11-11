@@ -171,20 +171,20 @@ func TestDuplicateReadDirectoryAndSearchResults(t *testing.T) {
 			}
 			call := llm.FunctionCall{Name: name, CallID: "original", Arguments: args}
 			full := `{"ok":true,"data":[{"path":"a.go","size":1}]}`
-			if replacement, _ := g.inspect(call, full, "/workspace"); replacement != "" {
+			if replacement, _, _ := g.inspect(call, full, "/workspace"); replacement != "" {
 				t.Fatal(replacement)
 			}
 			if name == "list_files" {
 				call.Arguments = `{"root":"/workspace/.","limit":500,"max_depth":0,"pattern":"","include_hidden":false}`
 			}
-			if _, notice := g.inspect(call, full, "/workspace"); !strings.Contains(notice, "第2次") {
+			if _, notice, _ := g.inspect(call, full, "/workspace"); !strings.Contains(notice, "第2次") {
 				t.Fatal(notice)
 			}
-			if replacement, _ := g.inspect(call, full, "/workspace"); !strings.Contains(replacement, `"ok":false`) {
+			if replacement, _, _ := g.inspect(call, full, "/workspace"); !strings.Contains(replacement, `"ok":false`) {
 				t.Fatal(replacement)
 			}
 			changed := `{"ok":true,"data":[{"path":"a.go","size":2}]}`
-			if replacement, _ := g.inspect(call, changed, "/workspace"); replacement != "" {
+			if replacement, _, _ := g.inspect(call, changed, "/workspace"); replacement != "" {
 				t.Fatal(replacement)
 			}
 		})
@@ -196,13 +196,13 @@ func TestDuplicateReadGuardIsBoundedAndExcludesBufferPaging(t *testing.T) {
 	for i := 0; i < maxDuplicateReadEntries+20; i++ {
 		call := llm.FunctionCall{Name: "read_file", Arguments: `{}`}
 		full := fmt.Sprintf(`{"ok":true,"data":{"path":"file-%d","offset":1,"limit":1}}`, i)
-		g.inspect(call, full, "/workspace")
+		_, _, _ = g.inspect(call, full, "/workspace")
 	}
 	if len(g.entries) != maxDuplicateReadEntries {
 		t.Fatal(len(g.entries))
 	}
 	for i := 0; i < 5; i++ {
-		if replacement, _ := g.inspect(llm.FunctionCall{Name: "read_tool_buffer", Arguments: `{"offset":0}`}, `{"ok":true,"data":[]}`, "/workspace"); replacement != "" {
+		if replacement, _, _ := g.inspect(llm.FunctionCall{Name: "read_tool_buffer", Arguments: `{"offset":0}`}, `{"ok":true,"data":[]}`, "/workspace"); replacement != "" {
 			t.Fatal(replacement)
 		}
 	}

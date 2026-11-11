@@ -20,13 +20,20 @@ const auditProgressLimitTurns = 16
 // capped so a worker cannot page forever instead of concluding.
 const auditProgressPageCredits = 24
 
+// Reading material the worker has never seen (a new file, a new search result) is
+// coverage progress even before it is written up as a conclusion. The credit is
+// capped: after that the worker owes conclusions, and unchanged repeats earn
+// nothing because the duplicate-read guard already withholds them.
+const auditProgressEvidenceCredits = 8
+
 type auditProgressGuard struct {
-	turns        int
-	warningTurns int
-	limitTurns   int
-	known        map[string]bool
-	pageOffsets  map[string]int64
-	pageCredits  int
+	turns           int
+	warningTurns    int
+	limitTurns      int
+	known           map[string]bool
+	pageOffsets     map[string]int64
+	pageCredits     int
+	evidenceCredits int
 }
 
 func newAuditProgressGuard(snapshot tools.Snapshot, cfg config.AgentConfig) *auditProgressGuard {
@@ -65,6 +72,18 @@ func (g *auditProgressGuard) creditPage(tool, result string) bool {
 	}
 	g.pageOffsets[page.BufferID] = page.Offset
 	g.pageCredits++
+	g.turns = 0
+	return true
+}
+
+// creditEvidence records that a tool call returned material this worker had not
+// read before. It has to be a successful call that the duplicate-read guard saw as
+// new; the cap keeps a long read-only sweep from substituting for conclusions.
+func (g *auditProgressGuard) creditEvidence() bool {
+	if g.evidenceCredits >= auditProgressEvidenceCredits {
+		return false
+	}
+	g.evidenceCredits++
 	g.turns = 0
 	return true
 }
@@ -125,6 +144,13 @@ func (g *auditProgressGuard) observe(snapshot tools.Snapshot) (warning string, e
 		return fmt.Sprintf("连续 %d 个审计回合没有新增审阅结论。请收敛当前证据，给出有依据的 file_review_update 结论或变量/链路结论，发现问题则 report_finding；重复读取、列目录和修改 reviewing 笔记不算完成。达到 %d 回合将暂停该成员并保留进度，不会自动标记文件完成。", g.warningTurns, g.limitTurns), nil
 	}
 	return "", nil
+}
+
+// converging reports that the worker has spent its evidence-gathering window and
+// now owes a written conclusion. Reading is still possible afterwards: a new
+// conclusion resets the window.
+func (g *auditProgressGuard) converging() bool {
+	return g.turns >= g.warningTurns
 }
 
 func (g *auditProgressGuard) failure() error {
