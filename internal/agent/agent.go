@@ -1326,11 +1326,13 @@ const assignmentDirective = "【分配清单】"
 // in the system prompt is not enough: a 35-minute audit stage finished with the
 // assigned crypto file still "pending" while the worker read four unrelated files.
 func (a *Agent) reinforceAssignment() {
-	if a.phase != phaseAudit || a.completed || len(a.assigned) == 0 {
+	if a.phase != phaseAudit || a.completed {
 		return
 	}
+	snapshot := a.tools.Snapshot()
+	candidate := pendingAuditCandidateDirective(snapshot)
 	status := map[string]string{}
-	for _, file := range a.tools.Snapshot().Files {
+	for _, file := range snapshot.Files {
 		status[file.Path] = file.Status
 	}
 	var pending []string
@@ -1355,6 +1357,15 @@ func (a *Agent) reinforceAssignment() {
 		// The continuation cursor indexes this slice. Removing a preceding
 		// reminder shifts tool outputs left and would silently skip evidence.
 		a.invalidateResponseContinuation()
+	}
+	if a.verifying {
+		// Verification has its own evidence and conclusion task; the main file
+		// checklist must not redirect it to an unrelated unfinished file.
+		return
+	}
+	if candidate != "" {
+		a.addMessage(llm.Message{Role: llm.RoleUser, Content: assignmentDirective + candidate})
+		return
 	}
 	if len(pending) == 0 {
 		return
