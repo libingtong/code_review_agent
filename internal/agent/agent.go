@@ -1587,7 +1587,7 @@ func (a *Agent) compressMessages(ctx context.Context, emit func(Event), reason s
 	}
 	var compressed string
 	for {
-		compressed, err = a.chatWithRetryClient(ctx, a.compressClient, request, emit)
+		compressed, err = a.chatWithRetryClient(llm.WithFinalTextOnly(ctx), a.compressClient, request, emit)
 		if err == nil {
 			break
 		}

@@ -557,7 +557,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, messages []Message) (result str
 		if err != nil {
 			return "", err
 		}
-		return joinAssistantParts(thinking.String(), content.String()), err
+		return assistantText(ctx, thinking.String(), content.String()), err
 	}
 	if c.cfg.APIKey == "" {
 		return "", fmt.Errorf("missing API key; set openai.api_key directly, or set openai.api_key_env to an environment variable name")
@@ -626,7 +626,7 @@ func (c *OpenAIClient) Chat(ctx context.Context, messages []Message) (result str
 		return "", fmt.Errorf("openai returned no choices")
 	}
 	msg := parsed.Choices[0].Message
-	return joinAssistantParts(firstNonEmpty(msg.ReasoningContent, msg.Reasoning, msg.ReasoningText), msg.Content), nil
+	return assistantText(ctx, firstNonEmpty(msg.ReasoningContent, msg.Reasoning, msg.ReasoningText), msg.Content), nil
 }
 
 // ChatTools uses the provider's native function-call protocol. Tool calls are
@@ -878,7 +878,7 @@ func (c *OpenAIClient) responsesChat(ctx context.Context, messages []Message) (s
 	}); err != nil {
 		return "", err
 	}
-	return joinAssistantParts(thinking.String(), content.String()), nil
+	return assistantText(ctx, thinking.String(), content.String()), nil
 }
 
 func responsesInput(messages []Message) []responsesInputItem {
@@ -905,6 +905,22 @@ func (c *OpenAIClient) responsesContinuationInput(ctx context.Context, messages 
 		return "", messages
 	}
 	return continuation.PreviousResponseID, continuation.Messages
+}
+
+type finalTextOnlyContextKey struct{}
+
+// WithFinalTextOnly asks text requests to return only the final answer channel.
+// Compression must not persist intermediate reasoning in place of its summary.
+// The setting is request scoped; ordinary calls retain their existing behavior.
+func WithFinalTextOnly(ctx context.Context) context.Context {
+	return context.WithValue(ctx, finalTextOnlyContextKey{}, true)
+}
+
+func assistantText(ctx context.Context, thinking, content string) string {
+	if finalOnly, _ := ctx.Value(finalTextOnlyContextKey{}).(bool); finalOnly {
+		return content
+	}
+	return joinAssistantParts(thinking, content)
 }
 
 func joinAssistantParts(thinking, content string) string {

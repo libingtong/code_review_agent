@@ -293,7 +293,6 @@ func runHeadless(cfg config.Config, team *agent.Team, gate *schedule.Gate, dir s
 	}()
 
 	// Track the latest state so a compact progress line can be printed.
-	var lastState agent.Event
 	emit := func(event agent.Event) {
 		switch event.Kind {
 		case "tool":
@@ -301,7 +300,6 @@ func runHeadless(cfg config.Config, team *agent.Team, gate *schedule.Gate, dir s
 		case "error":
 			fmt.Fprintf(os.Stderr, "[%s] 错误：%s\n", event.AgentID, event.Content)
 		case "state":
-			lastState = event
 			if len(event.Workers) > 0 {
 				// Progress first: how much of the workspace is audited, what is left,
 				// and how long that should take at the observed rate.
@@ -344,7 +342,6 @@ func runHeadless(cfg config.Config, team *agent.Team, gate *schedule.Gate, dir s
 			fmt.Fprintf(os.Stderr, "警告：写报告失败：%v\n", err)
 		}
 	}
-	_ = lastState
 
 	files := 0
 	for _, entry := range snapshot.Files {
@@ -353,11 +350,26 @@ func runHeadless(cfg config.Config, team *agent.Team, gate *schedule.Gate, dir s
 			files++
 		}
 	}
-	fmt.Fprintf(os.Stderr, "完成：用时 %s · 文件 %d/%d · 漏洞 %d\n", elapsed, files, len(snapshot.Files), len(snapshot.Findings))
-	if ctx.Err() != nil {
+	phase := team.Phase()
+	if phase == "completed" {
+		fmt.Fprintf(os.Stderr, "完成：用时 %s · 文件 %d/%d · 漏洞 %d\n", elapsed, files, len(snapshot.Files), len(snapshot.Findings))
+	} else {
+		fmt.Fprintf(os.Stderr, "未完成：阶段=%s · 用时 %s · 文件 %d/%d · 漏洞 %d；进度已保存，可使用 resume 继续\n", phase, elapsed, files, len(snapshot.Files), len(snapshot.Findings))
+	}
+	return headlessExitCode(phase, ctx.Err(), false, len(snapshot.Findings), files)
+}
+
+func headlessExitCode(phase string, ctxErr error, blocked bool, findings, files int) int {
+	if blocked {
+		return 4
+	}
+	if ctxErr != nil {
 		return 130
 	}
-	if len(snapshot.Findings) == 0 && files == 0 {
+	if phase != "completed" {
+		return 1
+	}
+	if findings == 0 && files == 0 {
 		return 1
 	}
 	return 0

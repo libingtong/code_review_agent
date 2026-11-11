@@ -431,8 +431,12 @@ func (t *Team) receive(w *teamWorker, e Event) {
 	t.mu.Unlock()
 	if failureNotice != "" {
 		t.board.SetStatus(w.agent.id, "failed")
-		if _, err := t.board.Post("coordinator", "system", phaseModerator, 0, "Agent 失败待诊断", failureNotice); err != nil {
-			t.publish(Event{Kind: "error", Content: "无法发布成员失败通知：" + err.Error()})
+		if t.cfg.Agent.ModeratorIsEnabled() {
+			if _, err := t.board.Post("coordinator", "system", phaseModerator, 0, "Agent 失败待诊断", failureNotice); err != nil {
+				t.publish(Event{Kind: "error", Content: "无法发布成员失败通知：" + err.Error()})
+			}
+		} else {
+			applog.L().Warnf("成员失败通知已记录：moderator_disabled agent=%s", w.agent.id)
 		}
 	}
 	t.publish(e)
