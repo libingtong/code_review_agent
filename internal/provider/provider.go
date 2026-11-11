@@ -284,7 +284,9 @@ func auxClient(compress config.OpenAIConfig, source config.OpenAIConfig) *llm.Op
 	if compress.Temperature != 0 {
 		derived.Temperature = compress.Temperature
 	}
-	derived.Stream = false
+	// Keep the source's streaming transport. Chat collects its complete text,
+	// while the stream idle watchdog permits long generations that keep making
+	// progress; forcing non-streaming applies the timeout to total generation.
 	return llm.NewOpenAIClient(derived)
 }
 
